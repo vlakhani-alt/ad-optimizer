@@ -1,0 +1,16 @@
+Campaign,Ad Group,Headline,Description,Impressions,Clicks,CTR,Conversions,Spend,CPA
+Brand Awareness,AI Tools,Try Claude Today,The AI assistant that actually helps you get work done. Start free.,45000,1800,4.0%,"$120","$2,700",$22.50
+Brand Awareness,AI Tools,Meet Your AI Partner,Work smarter with Claude. Built by Anthropic for real productivity.,38000,950,2.5%,"$45","$2,200",$48.89
+Brand Awareness,AI Tools,AI That Gets It,Claude understands context like no other AI. Try it now.,52000,2600,5.0%,"$180","$3,100",$17.22
+Performance,Coding,Code Faster With AI,Let Claude write review and debug your code. Free to start.,28000,1120,4.0%,"$95","$1,800",$18.95
+Performance,Coding,Your AI Dev Partner,Claude helps you code debug and ship faster than ever.,22000,440,2.0%,"$18","$1,500",$83.33
+Performance,Coding,Write Better Code,AI-powered coding assistant that understands your codebase.,35000,1750,5.0%,"$150","$2,000",$13.33
+Performance,Writing,Write Like a Pro,Claude helps you draft edit and polish any document instantly.,31000,620,2.0%,"$25","$1,900",$76.00
+Performance,Writing,AI Writing Assistant,From emails to essays Claude helps you write better faster.,42000,2100,5.0%,"$160","$2,500",$15.63
+Performance,Writing,Draft In Seconds,Stop staring at blank pages. Claude writes your first draft.,25000,500,2.0%,"$15","$1,400",$93.33
+Retargeting,Return Users,Come Back to Claude,You left off mid-project. Claude remembers where you were.,18000,360,2.0%,"$12","$900",$75.00
+Retargeting,Return Users,Continue Your Work,Pick up right where you left off with Claude AI.,20000,1000,5.0%,"$85","$1,000",$11.76
+Retargeting,Return Users,We Missed You,Your AI workspace is waiting. Jump back in.,15000,225,1.5%,"$8","$800",$100.00
+Competitor,VS ChatGPT,Beyond ChatGPT,Claude: the AI that thinks deeper and hallucinates less.,55000,2750,5.0%,"$200","$3,500",$17.50
+Competitor,VS ChatGPT,Smarter Than GPT,Developers are switching to Claude. See why.,30000,600,2.0%,"$20","$2,000",$100.00
+Competitor,VS ChatGPT,The AI Upgrade,Ready for AI that actually follows instructions? Try Claude.,48000,2400,5.0%,"$175","$3,200",$18.29

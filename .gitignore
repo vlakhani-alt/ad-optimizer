@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+memory/*.json
+sample_ads_variations.csv
+sample_ads_variations_standalone.csv
+.env
+*.xlsx
