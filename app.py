@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 
-from analyzer import detect_columns, clean_metrics, flag_underperformers
+from analyzer import detect_columns, clean_metrics, flag_underperformers, detect_fatigue
 from memory import (
     load_history, save_run, generate_run_id, summarize_insights,
     extract_top_performers, RunRecord,
@@ -18,174 +18,299 @@ from agents import (
     generate_ad_sets, DEFAULT_AD_SETS,
     analyze_creative_strategy, build_dataset_summary,
     list_platforms, get_platform, detect_platform, PLATFORMS,
+    FUNNEL_STAGES,
 )
 from platforms import MetaAdsPlatform, GoogleAdsPlatform
-from clients import list_clients, load_client, save_client, create_client, delete_client, client_memory_dir, ClientConfig
+from clients import list_clients, load_client, save_client, create_client, delete_client, client_memory_dir, ClientConfig, CATEGORIES
+from auth import check_auth, render_logout_button, get_current_role, has_permission, render_user_management, ROLES
+from templates import (
+    list_templates, load_template, save_template, create_template,
+    delete_template, render_preview, render_all_previews,
+    export_previews_zip, AdTemplate, TextSlot,
+)
 
 # ── Page Config ──────────────────────────────────────────
 st.set_page_config(page_title="Ad Optimizer", page_icon="⚡", layout="wide")
 
+# ── Auth Gate ────────────────────────────────────────────
+if not check_auth():
+    st.stop()
+
 # ── CSS ──────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-.stApp { font-family: 'Inter', sans-serif; }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+    --accent: #E8FF47;
+    --accent-dim: rgba(232,255,71,0.12);
+    --accent-mid: rgba(232,255,71,0.25);
+    --surface: rgba(255,255,255,0.025);
+    --border: rgba(255,255,255,0.07);
+    --border-hover: rgba(255,255,255,0.15);
+    --text-primary: #F0F0F0;
+    --text-secondary: rgba(255,255,255,0.5);
+    --text-muted: rgba(255,255,255,0.3);
+    --danger: #FF6B6B;
+    --success: #4ADE80;
+    --info: #60A5FA;
+    --bg-deep: #08080C;
+    --bg-surface: #0E0E14;
+}
+
+.stApp {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg-deep);
+    background-image:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(232,255,71,0.03), transparent),
+        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(96,165,250,0.02), transparent);
+}
 header[data-testid="stHeader"] { background: transparent; }
 div[data-testid="stToolbar"] { display: none; }
 div[data-testid="stDecoration"] { display: none; }
 .block-container { padding-top: 2rem; max-width: 1100px; }
 
+/* ── Sidebar ── */
 section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0a0a0f 0%, #12121a 100%);
-    border-right: 1px solid rgba(255,255,255,0.06);
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border);
 }
 section[data-testid="stSidebar"] .stMarkdown p,
-section[data-testid="stSidebar"] .stMarkdown li { color: rgba(255,255,255,0.7); font-size: 0.85rem; }
+section[data-testid="stSidebar"] .stMarkdown li { color: var(--text-secondary); font-size: 0.85rem; }
 
+/* ── Hero ── */
 .hero {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    border-radius: 16px; padding: 2.5rem 2rem; margin-bottom: 2rem; color: white;
+    position: relative;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 2.5rem 2.2rem;
+    margin-bottom: 2rem;
+    color: var(--text-primary);
+    overflow: hidden;
 }
-.hero h1 { font-size: 2rem; font-weight: 800; margin: 0 0 0.5rem 0; color: white; }
-.hero p { font-size: 1rem; opacity: 0.9; margin: 0; line-height: 1.5; }
+.hero::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background:
+        linear-gradient(135deg, rgba(232,255,71,0.06) 0%, transparent 40%),
+        linear-gradient(225deg, rgba(96,165,250,0.04) 0%, transparent 50%);
+    pointer-events: none;
+}
+.hero::after {
+    content: '';
+    position: absolute; top: -1px; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.6;
+}
+.hero h1 {
+    font-size: 2rem; font-weight: 800; margin: 0 0 0.6rem 0;
+    color: var(--text-primary); letter-spacing: -0.02em; position: relative;
+}
+.hero p { font-size: 0.95rem; color: var(--text-secondary); margin: 0; line-height: 1.6; position: relative; }
 
+/* ── Step Pipeline ── */
 .step-pipeline { display: flex; gap: 0; margin: 1.5rem 0 2rem 0; }
 .step-card {
     flex: 1; padding: 1rem 1.2rem;
-    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+    background: var(--surface); border: 1px solid var(--border);
     position: relative; text-align: center;
+    transition: all 0.2s ease;
 }
-.step-card:first-child { border-radius: 12px 0 0 12px; }
-.step-card:last-child { border-radius: 0 12px 12px 0; }
-.step-card.active { background: rgba(102,126,234,0.15); border-color: rgba(102,126,234,0.4); }
-.step-card.done { background: rgba(0,200,83,0.08); border-color: rgba(0,200,83,0.2); }
+.step-card:first-child { border-radius: 14px 0 0 14px; }
+.step-card:last-child { border-radius: 0 14px 14px 0; }
+.step-card.active { background: var(--accent-dim); border-color: rgba(232,255,71,0.25); }
+.step-card.done { background: rgba(74,222,128,0.06); border-color: rgba(74,222,128,0.2); }
 .step-num {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 28px; height: 28px; border-radius: 50%;
-    background: rgba(255,255,255,0.1); font-size: 0.8rem; font-weight: 700;
-    margin-bottom: 0.4rem; color: rgba(255,255,255,0.5);
+    width: 28px; height: 28px; border-radius: 8px;
+    background: rgba(255,255,255,0.06); font-size: 0.8rem; font-weight: 700;
+    margin-bottom: 0.4rem; color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
 }
-.step-card.active .step-num { background: #667eea; color: white; }
-.step-card.done .step-num { background: #00c853; color: white; }
-.step-label { font-size: 0.78rem; font-weight: 600; color: rgba(255,255,255,0.5); }
-.step-card.active .step-label { color: #667eea; }
-.step-card.done .step-label { color: #00c853; }
+.step-card.active .step-num { background: var(--accent); color: #08080C; }
+.step-card.done .step-num { background: var(--success); color: #08080C; }
+.step-label { font-size: 0.78rem; font-weight: 600; color: var(--text-muted); }
+.step-card.active .step-label { color: var(--accent); }
+.step-card.done .step-label { color: var(--success); }
 
+/* ── Section Headers ── */
 .section-header { display: flex; align-items: center; gap: 0.75rem; margin: 1.5rem 0 1rem 0; }
 .section-icon {
     width: 40px; height: 40px; border-radius: 10px;
     display: flex; align-items: center; justify-content: center; font-size: 1.2rem;
 }
-.section-icon.purple { background: rgba(102,126,234,0.15); }
-.section-icon.green { background: rgba(0,200,83,0.15); }
-.section-icon.orange { background: rgba(255,152,0,0.15); }
-.section-icon.red { background: rgba(255,82,82,0.15); }
-.section-icon.blue { background: rgba(33,150,243,0.15); }
-.section-title { font-size: 1.1rem; font-weight: 700; margin: 0; }
-.section-subtitle { font-size: 0.8rem; color: rgba(255,255,255,0.5); margin: 0; }
+.section-icon.purple { background: var(--accent-dim); }
+.section-icon.green { background: rgba(74,222,128,0.12); }
+.section-icon.orange { background: rgba(251,191,36,0.12); }
+.section-icon.red { background: rgba(255,107,107,0.12); }
+.section-icon.blue { background: rgba(96,165,250,0.12); }
+.section-title { font-size: 1.1rem; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+.section-subtitle { font-size: 0.8rem; color: var(--text-muted); margin: 0; }
 
+/* ── Stat Cards ── */
 .stat-row { display: flex; gap: 1rem; margin: 1rem 0; }
 .stat-card {
-    flex: 1; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 12px; padding: 1.2rem; text-align: center;
+    flex: 1; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 1.2rem; text-align: center;
+    transition: border-color 0.2s ease;
 }
-.stat-value { font-size: 1.8rem; font-weight: 800; color: white; }
-.stat-value.red { color: #ff5252; }
-.stat-value.green { color: #00c853; }
-.stat-value.purple { color: #667eea; }
+.stat-card:hover { border-color: var(--border-hover); }
+.stat-value {
+    font-size: 1.8rem; font-weight: 800; color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace; letter-spacing: -0.03em;
+}
+.stat-value.red { color: var(--danger); }
+.stat-value.green { color: var(--success); }
+.stat-value.purple { color: var(--accent); }
 .stat-label {
-    font-size: 0.75rem; color: rgba(255,255,255,0.5);
-    text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.3rem;
+    font-size: 0.7rem; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.3rem; font-weight: 600;
 }
 
+/* ── Underperformer Cards ── */
 .underperformer-card {
-    background: rgba(255,82,82,0.05); border: 1px solid rgba(255,82,82,0.15);
-    border-radius: 12px; padding: 1.2rem; margin-bottom: 0.75rem;
+    background: rgba(255,107,107,0.04); border: 1px solid rgba(255,107,107,0.12);
+    border-radius: 14px; padding: 1.2rem; margin-bottom: 0.75rem;
+    transition: border-color 0.2s ease;
 }
+.underperformer-card:hover { border-color: rgba(255,107,107,0.25); }
 .underperformer-card .ad-label { font-weight: 700; font-size: 0.95rem; margin-bottom: 0.3rem; }
-.underperformer-card .ad-headline { color: rgba(255,255,255,0.7); font-size: 0.85rem; margin-bottom: 0.5rem; font-style: italic; }
+.underperformer-card .ad-headline { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 0.5rem; font-style: italic; }
 .reason-tag {
-    display: inline-block; background: rgba(255,82,82,0.12); color: #ff8a80;
+    display: inline-block; background: rgba(255,107,107,0.1); color: #FFA0A0;
     padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.72rem;
     margin: 0.15rem 0.25rem 0.15rem 0; font-weight: 500;
+    font-family: 'JetBrains Mono', monospace;
 }
 .score-badge {
-    float: right; background: rgba(255,82,82,0.2); color: #ff5252;
-    padding: 0.2rem 0.8rem; border-radius: 20px; font-size: 0.8rem; font-weight: 700;
+    float: right; background: rgba(255,107,107,0.15); color: var(--danger);
+    padding: 0.2rem 0.8rem; border-radius: 8px; font-size: 0.8rem; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
 }
 
+/* ── Setup Cards ── */
 .setup-card {
-    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 14px; padding: 1.5rem; margin-bottom: 1rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 1.5rem; margin-bottom: 1rem;
+    transition: border-color 0.2s ease;
 }
+.setup-card:hover { border-color: var(--border-hover); }
 .setup-card h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
-.setup-card p { color: rgba(255,255,255,0.6); font-size: 0.85rem; line-height: 1.5; }
+.setup-card p { color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; }
 .setup-step-num {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 32px; height: 32px; border-radius: 50%;
-    background: rgba(102,126,234,0.2); color: #667eea;
+    width: 32px; height: 32px; border-radius: 8px;
+    background: var(--accent-dim); color: var(--accent);
     font-weight: 800; font-size: 0.9rem; margin-right: 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
 }
-.check-icon { color: #00c853; font-size: 1.2rem; }
+.check-icon { color: var(--success); font-size: 1.2rem; }
 
+/* ── Figma Flow ── */
 .figma-flow { display: flex; gap: 0.75rem; margin: 1rem 0; }
 .figma-step {
-    flex: 1; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 12px; padding: 1rem; text-align: center;
+    flex: 1; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 1rem; text-align: center;
+    transition: all 0.2s ease;
 }
+.figma-step:hover { border-color: var(--border-hover); transform: translateY(-1px); }
 .figma-step .num {
-    width: 32px; height: 32px; border-radius: 50%;
-    background: rgba(162,89,255,0.2); color: #a259ff;
+    width: 32px; height: 32px; border-radius: 8px;
+    background: var(--accent-dim); color: var(--accent);
     display: inline-flex; align-items: center; justify-content: center;
     font-weight: 800; font-size: 0.85rem; margin-bottom: 0.5rem;
+    font-family: 'JetBrains Mono', monospace;
 }
-.figma-step .label { font-size: 0.8rem; font-weight: 600; color: rgba(255,255,255,0.7); }
-.arrow-connector { display: flex; align-items: center; color: rgba(255,255,255,0.2); font-size: 1.5rem; }
+.figma-step .label { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); }
+.arrow-connector { display: flex; align-items: center; color: var(--text-muted); font-size: 1.5rem; }
 
+/* ── Platform Cards ── */
 .platform-card {
-    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 14px; padding: 1.5rem; margin-bottom: 1rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 1.5rem; margin-bottom: 1rem;
 }
-.platform-card.connected { border-color: rgba(0,200,83,0.3); background: rgba(0,200,83,0.04); }
+.platform-card.connected { border-color: rgba(74,222,128,0.25); background: rgba(74,222,128,0.03); }
 .platform-card h3 { margin: 0 0 0.3rem 0; font-size: 1.05rem; }
-.platform-card .subtitle { color: rgba(255,255,255,0.5); font-size: 0.8rem; margin-bottom: 1rem; }
+.platform-card .subtitle { color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem; }
 .platform-badge {
-    display: inline-block; padding: 0.2rem 0.7rem; border-radius: 20px;
-    font-size: 0.72rem; font-weight: 600;
+    display: inline-block; padding: 0.2rem 0.7rem; border-radius: 6px;
+    font-size: 0.72rem; font-weight: 600; font-family: 'JetBrains Mono', monospace;
 }
-.platform-badge.meta { background: rgba(24,119,242,0.15); color: #1877f2; }
-.platform-badge.google { background: rgba(66,133,244,0.15); color: #4285f4; }
-.platform-badge.connected { background: rgba(0,200,83,0.15); color: #00c853; }
-.platform-badge.paused { background: rgba(255,152,0,0.15); color: #ff9800; }
+.platform-badge.meta { background: rgba(24,119,242,0.12); color: #60A5FA; }
+.platform-badge.google { background: rgba(96,165,250,0.12); color: #93C5FD; }
+.platform-badge.connected { background: rgba(74,222,128,0.12); color: var(--success); }
+.platform-badge.paused { background: rgba(251,191,36,0.12); color: #FCD34D; }
 .push-result {
-    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 10px; padding: 0.8rem 1rem; margin: 0.4rem 0; font-size: 0.85rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 0.8rem 1rem; margin: 0.4rem 0; font-size: 0.85rem;
 }
-.push-result.success { border-color: rgba(0,200,83,0.3); }
-.push-result.error { border-color: rgba(255,82,82,0.3); }
+.push-result.success { border-color: rgba(74,222,128,0.25); }
+.push-result.error { border-color: rgba(255,107,107,0.25); }
 
+/* ── Streamlit Overrides ── */
 div[data-testid="stMetric"] {
-    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 12px; padding: 1rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 1rem;
 }
 .stTabs [data-baseweb="tab-list"] {
-    gap: 0; background: rgba(255,255,255,0.03); border-radius: 12px;
-    padding: 4px; border: 1px solid rgba(255,255,255,0.06);
+    gap: 2px; background: var(--surface); border-radius: 14px;
+    padding: 4px; border: 1px solid var(--border);
 }
-.stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 0.5rem 1.2rem; font-weight: 600; font-size: 0.85rem; }
-.stTabs [aria-selected="true"] { background: rgba(102,126,234,0.2) !important; }
-div[data-testid="stFileUploader"] { border: 2px dashed rgba(255,255,255,0.12); border-radius: 14px; padding: 0.5rem; }
-div[data-testid="stFileUploader"]:hover { border-color: rgba(102,126,234,0.4); }
+.stTabs [data-baseweb="tab"] {
+    border-radius: 10px; padding: 0.5rem 1.2rem; font-weight: 600; font-size: 0.83rem;
+    transition: all 0.15s ease;
+}
+.stTabs [aria-selected="true"] {
+    background: var(--accent-dim) !important;
+    color: var(--accent) !important;
+}
+div[data-testid="stFileUploader"] {
+    border: 2px dashed var(--border); border-radius: 16px; padding: 0.5rem;
+    transition: border-color 0.2s ease;
+}
+div[data-testid="stFileUploader"]:hover { border-color: var(--accent-mid); }
 .stDownloadButton > button {
-    background: rgba(102,126,234,0.15) !important; border: 1px solid rgba(102,126,234,0.3) !important;
+    background: var(--accent-dim) !important;
+    border: 1px solid rgba(232,255,71,0.2) !important;
     border-radius: 10px !important; font-weight: 600 !important;
+    color: var(--accent) !important;
+    transition: all 0.2s ease !important;
 }
-.stDownloadButton > button:hover { background: rgba(102,126,234,0.25) !important; border-color: rgba(102,126,234,0.5) !important; }
+.stDownloadButton > button:hover {
+    background: var(--accent-mid) !important;
+    border-color: rgba(232,255,71,0.4) !important;
+}
 button[kind="primary"] {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    background: var(--accent) !important; color: #08080C !important;
     border: none !important; border-radius: 10px !important;
     font-weight: 700 !important; padding: 0.6rem 2rem !important;
+    transition: all 0.2s ease !important;
 }
+button[kind="primary"]:hover {
+    filter: brightness(0.9) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ── Animations ── */
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.hero { animation: fadeInUp 0.5s ease-out; }
+.step-pipeline { animation: fadeInUp 0.5s ease-out 0.1s both; }
+.setup-card { animation: fadeInUp 0.4s ease-out both; }
+.setup-card:nth-child(1) { animation-delay: 0.05s; }
+.setup-card:nth-child(2) { animation-delay: 0.1s; }
+.setup-card:nth-child(3) { animation-delay: 0.15s; }
+.setup-card:nth-child(4) { animation-delay: 0.2s; }
+.setup-card:nth-child(5) { animation-delay: 0.25s; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -239,6 +364,7 @@ def _clear_pipeline_state():
 with st.sidebar:
     st.markdown("### Ad Optimizer")
     st.markdown("AI-powered ad copy pipeline")
+    render_logout_button()
     st.markdown("---")
 
     # ── Client Selector ──
@@ -291,15 +417,18 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Brand Context (from client or manual) ──
-    st.markdown("**Brand Context**")
-    brand = st.text_input("Brand", value=cl.brand if cl else "", placeholder="e.g. Anthropic", label_visibility="collapsed", key="brand_input")
-    product = st.text_input("Product", value=cl.product if cl else "", placeholder="e.g. Claude AI Assistant", label_visibility="collapsed", key="product_input")
-    # Auto-save brand/product to client
-    if cl and (brand != cl.brand or product != cl.product):
-        cl.brand = brand
-        cl.product = product
-        save_client(cl)
+    # ── Brand Summary (compact — full brief in Setup tab) ──
+    if cl and cl.brand:
+        _cat = f" · {cl.category}" if cl.category else ""
+        st.markdown(f"**{cl.brand}**{_cat}")
+        if cl.product:
+            st.caption(cl.product)
+    else:
+        st.markdown("**Brand** &nbsp; Not configured")
+        st.caption("Set up in the Setup tab")
+    # Expose brand/product for the rest of the app
+    brand = cl.brand if cl else ""
+    product = cl.product if cl else ""
 
     st.markdown("---")
     st.markdown("**Platform**")
@@ -336,12 +465,19 @@ with st.sidebar:
     st.markdown(f"**Memory{client_label}** &nbsp; {len(history)} runs &middot; {total_var} variations" if history else f"**Memory{client_label}** &nbsp; No runs yet")
 
 # ── Hero ─────────────────────────────────────────────────
-st.markdown("""
+import base64 as _b64
+_logo_path = Path(__file__).parent / "egc_logo.png"
+_logo_b64 = ""
+if _logo_path.exists():
+    _logo_b64 = _b64.b64encode(_logo_path.read_bytes()).decode()
+
+st.markdown(f"""
 <div class="hero">
-    <h1>⚡ Ad Optimizer</h1>
+    {'<img src="data:image/png;base64,' + _logo_b64 + '" style="height:36px;margin-bottom:1rem;opacity:0.9;" /><br>' if _logo_b64 else ''}
+    <h1>Ad Optimizer</h1>
     <p>Upload your ad performance CSV. AI sub-agents analyze what's underperforming,
-    generate optimized headlines &amp; descriptions, and learn from every iteration.
-    Export directly to Figma for visual creative.</p>
+    generate optimized copy with data-driven rationale, and learn from every iteration.
+    Preview on your templates and export to production.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -357,7 +493,7 @@ steps_html += '</div>'
 st.markdown(steps_html, unsafe_allow_html=True)
 
 # ── Tabs ─────────────────────────────────────────────────
-tab_setup, tab_analyze, tab_generate, tab_publish, tab_export, tab_memory = st.tabs(["Setup", "Upload & Analyze", "Generate Copy", "Publish", "Export", "Memory"])
+tab_setup, tab_templates, tab_analyze, tab_generate, tab_publish, tab_export, tab_memory = st.tabs(["Setup", "Templates", "Upload & Analyze", "Generate Copy", "Publish", "Export", "Memory"])
 
 # ══════════════════════════════════════════════════════════
 # SETUP
@@ -373,31 +509,74 @@ with tab_setup:
     st.markdown(f'''
     <div class="setup-card">
         <h3><span class="setup-step-num">1</span> Select Client {'<span class="check-icon">&#10004;</span>' if client_ok else ''}</h3>
-        <p>Use the <strong>Client</strong> dropdown in the sidebar to pick an existing client or create a new one.
-        Each client has its own brand context, platform credentials, and experiment memory.</p>
+        <p>Use the <strong>Client</strong> dropdown in the sidebar to pick an existing client or create a new one.</p>
     </div>
     <div class="setup-card">
         <h3><span class="setup-step-num">2</span> Anthropic API Key {'<span class="check-icon">&#10004;</span>' if api_ok else ''}</h3>
-        <p>Required for AI copy generation. Get your key at <strong>console.anthropic.com</strong> &rarr; API Keys &rarr; Create Key.
-        Paste it in the sidebar. It is saved per-client.</p>
+        <p>Required for AI copy generation. Get your key at <strong>console.anthropic.com</strong>. Paste it in the sidebar.</p>
     </div>
+    ''', unsafe_allow_html=True)
+
+    # ── Brand Brief (rich form, replaces old sidebar inputs) ──
+    _brief_complete = bool(brand and product and setup_client and setup_client.category)
+    st.markdown(f'''
     <div class="setup-card">
-        <h3><span class="setup-step-num">3</span> Brand &amp; Product {'<span class="check-icon">&#10004;</span>' if brand_ok else ''}</h3>
-        <p>Fill in <strong>Brand</strong> and <strong>Product</strong> in the sidebar so the AI writes relevant, on-brand copy.</p>
+        <h3><span class="setup-step-num">3</span> Brand Brief {'<span class="check-icon">&#10004;</span>' if _brief_complete else ''}</h3>
+        <p>The richer your brand brief, the more on-brand and strategically targeted the AI copy will be.</p>
     </div>
+    ''', unsafe_allow_html=True)
+
+    if setup_client:
+        with st.expander("Edit Brand Brief", expanded=not _brief_complete):
+            bb_col1, bb_col2 = st.columns(2)
+            with bb_col1:
+                _brand = st.text_input("Brand Name", value=setup_client.brand, placeholder="e.g. Anthropic", key="bb_brand")
+                _product = st.text_input("Product / Service", value=setup_client.product, placeholder="e.g. Claude AI Assistant", key="bb_product")
+                _cat_idx = CATEGORIES.index(setup_client.category) if setup_client.category in CATEGORIES else 0
+                _category = st.selectbox("Category", CATEGORIES, index=_cat_idx, key="bb_category",
+                                         format_func=lambda x: x if x else "Select a category...")
+            with bb_col2:
+                _brand_voice = st.text_area("Brand Voice & Tone", value=setup_client.brand_voice, key="bb_voice",
+                                            placeholder="How does the brand speak? e.g. Confident but approachable. Uses clear, jargon-free language. Never sarcastic.",
+                                            height=120)
+                _competitors = st.text_input("Competitors", value=setup_client.competitors, placeholder="e.g. OpenAI, Google, Mistral", key="bb_competitors")
+
+            _brand_desc = st.text_area("Brand Description", value=setup_client.brand_description, key="bb_desc",
+                                       placeholder="2-3 paragraphs about the brand. Mission, story, what they stand for, market position.",
+                                       height=120)
+            _target = st.text_area("Target Audience & Segments", value=setup_client.target_audience, key="bb_audience",
+                                   placeholder="Who buys this? Demographics, psychographics, pain points, segments. e.g. 'Primary: developers 25-40 building AI apps. Secondary: enterprise CTOs evaluating AI vendors.'",
+                                   height=100)
+            _diffr = st.text_area("Key Differentiators", value=setup_client.key_differentiators, key="bb_diff",
+                                  placeholder="What makes this product different? USPs, competitive advantages. e.g. 'Best-in-class reasoning, honest AI that admits uncertainty, safety-first approach.'",
+                                  height=80)
+
+            # Auto-save all brand brief fields
+            _changed = False
+            for attr, val in [("brand", _brand), ("product", _product), ("category", _category),
+                              ("brand_description", _brand_desc), ("target_audience", _target),
+                              ("brand_voice", _brand_voice), ("key_differentiators", _diffr),
+                              ("competitors", _competitors)]:
+                if getattr(setup_client, attr) != val:
+                    setattr(setup_client, attr, val)
+                    _changed = True
+            if _changed:
+                save_client(setup_client)
+                # Update module-level brand/product for downstream use
+                brand = setup_client.brand
+                product = setup_client.product
+    else:
+        st.info("Select or create a client first to configure the brand brief.")
+
+    st.markdown(f'''
     <div class="setup-card">
         <h3><span class="setup-step-num">4</span> Ad Performance CSV</h3>
-        <p>Export ads from Google Ads, Meta Ads, TikTok, LinkedIn, or any platform. Include:<br>
-        <strong>Identifiers:</strong> Campaign, Ad Group, Ad Name<br>
-        <strong>Copy:</strong> Headlines, Descriptions (optional — AI can infer from ad names)<br>
-        <strong>Metrics:</strong> Impressions, Clicks, CTR, Conversions, Spend, CPA<br><br>
-        The platform is <strong>auto-detected</strong> from your column names. Copy is generated in the
-        correct format for each platform (e.g. Meta Primary Text ≤125 chars, Google Headlines ≤30 chars).</p>
+        <p>Export ads from Google Ads, Meta Ads, TikTok, LinkedIn, or any platform. Include identifiers, copy fields, and metrics.
+        The platform is <strong>auto-detected</strong> from column names.</p>
     </div>
     <div class="setup-card">
         <h3><span class="setup-step-num">5</span> Platform Credentials (Optional)</h3>
-        <p>To push ads directly to Meta or Google, add your API credentials in the <strong>Publish</strong> tab.
-        Credentials are saved per-client so you only enter them once.</p>
+        <p>To push ads directly to Meta or Google, add API credentials in the <strong>Publish</strong> tab.</p>
     </div>
     ''', unsafe_allow_html=True)
 
@@ -407,11 +586,20 @@ with tab_setup:
 
         with st.expander("Manage Client"):
             st.caption(f"Client ID: `{setup_client.client_id}`")
-            if st.button("Delete This Client", key="delete_client_btn"):
-                delete_client(setup_client.client_id)
-                st.session_state.pop("active_client_id", None)
-                _clear_pipeline_state()
-                st.rerun()
+            if has_permission("delete_clients"):
+                if st.button("Delete This Client", key="delete_client_btn"):
+                    delete_client(setup_client.client_id)
+                    st.session_state.pop("active_client_id", None)
+                    _clear_pipeline_state()
+                    st.rerun()
+            else:
+                st.caption("Only Admins can delete clients.")
+
+    # ── User Management (Super Admin only) ──
+    if has_permission("manage_users"):
+        st.markdown("---")
+        with st.expander("User Management (Super Admin)", expanded=False):
+            render_user_management()
 
     st.markdown('<div class="section-header" style="margin-top:2rem;"><div class="section-icon blue">&#x1F504;</div><div><div class="section-title">How The Loop Works</div><div class="section-subtitle">The system gets smarter every cycle</div></div></div>', unsafe_allow_html=True)
 
@@ -423,7 +611,7 @@ with tab_setup:
         <div class="arrow-connector">&rarr;</div>
         <div class="figma-step"><div class="num">3</div><div class="label">Sub-Agents Write<br><small style="color:rgba(255,255,255,0.4)">headlines + descriptions</small></div></div>
         <div class="arrow-connector">&rarr;</div>
-        <div class="figma-step"><div class="num">4</div><div class="label">Export to Figma<br><small style="color:rgba(255,255,255,0.4)">auto-populate templates</small></div></div>
+        <div class="figma-step"><div class="num">4</div><div class="label">Preview &amp; Export<br><small style="color:rgba(255,255,255,0.4)">templates + Figma JSON</small></div></div>
         <div class="arrow-connector">&rarr;</div>
         <div class="figma-step"><div class="num">5</div><div class="label">Publish &amp; Measure<br><small style="color:rgba(255,255,255,0.4)">feed results back in</small></div></div>
     </div>
@@ -433,87 +621,245 @@ with tab_setup:
     ''', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════
+# TEMPLATES
+# ══════════════════════════════════════════════════════════
+with tab_templates:
+    st.markdown('<div class="section-header"><div class="section-icon orange">&#x1F3A8;</div><div><div class="section-title">Template Library</div><div class="section-subtitle">Upload ad templates and define text regions for creative preview</div></div></div>', unsafe_allow_html=True)
+
+    _tpl_client = active_client()
+    if not _tpl_client:
+        st.markdown('''
+        <div style="text-align:center;padding:4rem 2rem;color:rgba(255,255,255,0.4);">
+            <div style="font-size:2.5rem;margin-bottom:1rem;">&#x1F3A8;</div>
+            <div style="font-size:1.1rem;font-weight:600;color:rgba(255,255,255,0.6);margin-bottom:0.5rem;">No client selected</div>
+            <div style="font-size:0.85rem;max-width:400px;margin:0 auto;">
+                Select or create a client in the <strong>Setup</strong> tab first.
+                Templates are stored per-client so each brand gets its own creative library.
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
+    else:
+        # ── Upload new template ──
+        with st.expander("Upload New Template", expanded=False):
+            _tpl_name = st.text_input("Template Name", placeholder="e.g. Meta Feed Ad 1080x1080", key="tpl_name")
+            _tpl_platform = st.selectbox("Platform", ["", "Meta", "Google", "TikTok", "LinkedIn", "Other"], key="tpl_platform")
+            _tpl_file = st.file_uploader("Template Image", type=["png", "jpg", "jpeg"], key="tpl_upload")
+
+            if _tpl_name and _tpl_file and st.button("Save Template", key="save_tpl_btn"):
+                tpl = create_template(_tpl_client.client_id, _tpl_name, _tpl_file, _tpl_file.name,
+                                      platform=_tpl_platform)
+                st.success(f"Template **{tpl.name}** saved ({tpl.width}x{tpl.height})")
+                st.rerun()
+
+        # ── List existing templates ──
+        templates = list_templates(_tpl_client.client_id)
+        if not templates:
+            st.markdown("""
+            <div style="text-align:center;padding:3rem 1rem;color:rgba(255,255,255,0.4);">
+                <div style="font-size:2rem;margin-bottom:0.5rem;">&#x1F5BC;</div>
+                <div>No templates yet. Upload an ad template image to get started.</div>
+                <div style="font-size:0.8rem;margin-top:0.5rem;">Export your Figma/Canva designs as PNG, then define where text goes.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            for tpl in templates:
+                with st.expander(f"{tpl.name} ({tpl.width}x{tpl.height}) — {len(tpl.slots)} text slots"):
+                    from templates import get_template_image_path
+                    img_path = get_template_image_path(_tpl_client.client_id, tpl)
+
+                    tc1, tc2 = st.columns([1, 1])
+                    with tc1:
+                        if img_path:
+                            st.image(str(img_path), use_container_width=True)
+                        else:
+                            st.warning("Image file not found")
+
+                    with tc2:
+                        st.markdown("**Text Slots**")
+                        # Show existing slots
+                        for si, slot in enumerate(tpl.slots):
+                            st.caption(f"**{slot.label}** → `{slot.slot_id}` at ({slot.x},{slot.y}) {slot.width}x{slot.height} — {slot.font_size}px {slot.font_color}")
+
+                        # Add new slot form
+                        st.markdown("---")
+                        st.markdown("**Add Text Slot**")
+                        _slot_id = st.selectbox("Maps to", ["headline", "primary_text", "link_description", "description", "ad_text", "introductory_text"],
+                                                key=f"slot_id_{tpl.template_id}")
+                        _slot_label = st.text_input("Label", value=_slot_id.replace("_", " ").title(), key=f"slot_label_{tpl.template_id}")
+
+                        sc1, sc2, sc3, sc4 = st.columns(4)
+                        with sc1:
+                            _sx = st.number_input("X", value=60, min_value=0, max_value=tpl.width, key=f"sx_{tpl.template_id}")
+                        with sc2:
+                            _sy = st.number_input("Y", value=tpl.height - 200, min_value=0, max_value=tpl.height, key=f"sy_{tpl.template_id}")
+                        with sc3:
+                            _sw = st.number_input("Width", value=min(960, tpl.width - 120), min_value=50, key=f"sw_{tpl.template_id}")
+                        with sc4:
+                            _sh = st.number_input("Height", value=80, min_value=20, key=f"sh_{tpl.template_id}")
+
+                        sf1, sf2, sf3 = st.columns(3)
+                        with sf1:
+                            _fs = st.number_input("Font Size", value=32, min_value=8, max_value=120, key=f"fs_{tpl.template_id}")
+                        with sf2:
+                            _fc = st.color_picker("Font Color", value="#FFFFFF", key=f"fc_{tpl.template_id}")
+                        with sf3:
+                            _fa = st.selectbox("Align", ["left", "center", "right"], key=f"fa_{tpl.template_id}")
+
+                        if st.button("Add Slot", key=f"add_slot_{tpl.template_id}"):
+                            tpl.slots.append(TextSlot(
+                                slot_id=_slot_id, label=_slot_label,
+                                x=int(_sx), y=int(_sy), width=int(_sw), height=int(_sh),
+                                font_size=int(_fs), font_color=_fc, align=_fa,
+                            ))
+                            save_template(_tpl_client.client_id, tpl)
+                            st.rerun()
+
+                        # Preview with sample text
+                        if tpl.slots and img_path:
+                            st.markdown("---")
+                            sample_copy = {s.slot_id: f"Sample {s.label} Text" for s in tpl.slots}
+                            preview_img = render_preview(_tpl_client.client_id, tpl, sample_copy)
+                            if preview_img:
+                                st.markdown("**Preview with sample text:**")
+                                import io as _io
+                                buf = _io.BytesIO()
+                                preview_img.save(buf, format="PNG")
+                                st.image(buf.getvalue(), use_container_width=True)
+
+                    # Delete template
+                    if st.button("Delete Template", key=f"del_tpl_{tpl.template_id}"):
+                        delete_template(_tpl_client.client_id, tpl.template_id)
+                        st.rerun()
+
+# ══════════════════════════════════════════════════════════
 # UPLOAD & ANALYZE
 # ══════════════════════════════════════════════════════════
 with tab_analyze:
     st.markdown('<div class="section-header"><div class="section-icon green">&#x1F4E4;</div><div><div class="section-title">Upload &amp; Analyze</div><div class="section-subtitle">Drop your ad performance CSV &mdash; columns are auto-detected</div></div></div>', unsafe_allow_html=True)
 
-    uploaded = st.file_uploader("Upload CSV or XLSX", type=["csv", "xlsx", "xls"], label_visibility="collapsed")
+    _has_client = bool(active_client())
 
-    if uploaded:
-        if uploaded.name.endswith((".xlsx", ".xls")):
-            df = pd.read_excel(uploaded)
-        else:
-            df = pd.read_csv(uploaded)
-        st.session_state.df = df
-        mapping = detect_columns(df)
-        st.session_state.mapping = mapping
-        df_clean = clean_metrics(df, mapping)
-        st.session_state.df_clean = df_clean
-        underperformers = flag_underperformers(df_clean, mapping)
-        st.session_state.underperformers = underperformers
-
-        # Auto-detect platform from columns
-        detected_pid = detect_platform(list(df.columns))
-        st.session_state.auto_platform_id = detected_pid
-        detected_pf = get_platform(detected_pid)
-
-        n_under = len(underperformers)
-        flag_pct = n_under / len(df) * 100 if len(df) else 0
-
-        st.markdown(f'''
-        <div class="stat-row">
-            <div class="stat-card"><div class="stat-value">{len(df)}</div><div class="stat-label">Total Ads</div></div>
-            <div class="stat-card"><div class="stat-value red">{n_under}</div><div class="stat-label">Underperformers</div></div>
-            <div class="stat-card"><div class="stat-value purple">{flag_pct:.0f}%</div><div class="stat-label">Flag Rate</div></div>
-            <div class="stat-card"><div class="stat-value green">{len(df) - n_under}</div><div class="stat-label">Healthy Ads</div></div>
+    if not _has_client:
+        st.markdown('''
+        <div style="text-align:center;padding:4rem 2rem;color:rgba(255,255,255,0.4);">
+            <div style="font-size:2.5rem;margin-bottom:1rem;">&#x1F4E4;</div>
+            <div style="font-size:1.1rem;font-weight:600;color:rgba(255,255,255,0.6);margin-bottom:0.5rem;">Select a client first</div>
+            <div style="font-size:0.85rem;">Go to <strong>Setup</strong> to select or create a client, then come back to upload data.</div>
         </div>
         ''', unsafe_allow_html=True)
 
-        # Show detected platform
-        st.markdown(f'''
-        <div style="background:rgba(102,126,234,0.08);border:1px solid rgba(102,126,234,0.2);
-             border-radius:10px;padding:0.8rem 1rem;margin:0.5rem 0 1rem;font-size:0.85rem;">
-            {detected_pf.icon} <strong>Detected platform: {detected_pf.name}</strong>
-            &mdash; Copy will be generated with {detected_pf.name} formats.
-            Change in the sidebar if incorrect.
-        </div>
-        ''', unsafe_allow_html=True)
+    if _has_client:
+        uploaded = st.file_uploader("Upload CSV or XLSX", type=["csv", "xlsx", "xls"], label_visibility="collapsed")
 
-        with st.expander("Column Detection"):
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(f"**Identifiers:** {', '.join(mapping.identifiers) or 'None'}")
-                st.markdown(f"**Headlines:** {', '.join(mapping.headlines) or 'None detected'}")
-                st.markdown(f"**Descriptions:** {', '.join(mapping.descriptions) or 'None detected'}")
-            with c2:
-                for mt, cn in mapping.metrics.items():
-                    st.markdown(f"**{mt.replace('_', ' ').title()}:** {cn}")
-            if not mapping.headlines and not mapping.descriptions:
-                st.info("No headline/description columns found (common with Meta/social video ads). "
-                        "The AI will infer creative angles from ad names and metrics.")
-
-        with st.expander("Raw Data", expanded=False):
-            st.dataframe(df, use_container_width=True, height=250)
-
-        if underperformers:
-            st.markdown('<div class="section-header"><div class="section-icon red">&#x1F6A9;</div><div><div class="section-title">Underperforming Ads</div><div class="section-subtitle">Ranked by composite weakness score (higher = worse)</div></div></div>', unsafe_allow_html=True)
-
-            for u in underperformers:
-                label = next((str(u.ad_data.get(c, "")) for c in mapping.identifiers if u.ad_data.get(c)), f"Row {u.index}")
-                headline = next((str(u.ad_data.get(c, "")) for c in mapping.headlines if u.ad_data.get(c)), "")
-                reasons_html = "".join(f'<span class="reason-tag">{r}</span>' for r in u.reasons)
-                st.markdown(f'''
-                <div class="underperformer-card">
-                    <div class="ad-label">{label} <span class="score-badge">{u.score}</span></div>
-                    <div class="ad-headline">"{headline}"</div>
-                    {reasons_html}
+        if not uploaded and "underperformers" not in st.session_state:
+            st.markdown('''
+            <div style="text-align:center;padding:3rem 2rem;color:rgba(255,255,255,0.35);">
+                <div style="font-size:2rem;margin-bottom:0.5rem;">&#x2B06;</div>
+                <div style="font-size:0.95rem;font-weight:600;color:rgba(255,255,255,0.5);margin-bottom:0.5rem;">Drop your ad performance export above</div>
+                <div style="font-size:0.82rem;max-width:500px;margin:0 auto;line-height:1.6;">
+                    Supports <strong>CSV</strong> and <strong>XLSX</strong> from Meta Ads, Google Ads, TikTok, LinkedIn, or any platform.
+                    Columns are auto-detected. Include ad identifiers, copy fields, and performance metrics.
                 </div>
-                ''', unsafe_allow_html=True)
+            </div>
+            ''', unsafe_allow_html=True)
 
-            st.info("Head to **Generate Copy** to create AI-powered replacements.")
-        else:
-            st.success("All ads performing above threshold.")
+        if uploaded:
+            if uploaded.name.endswith((".xlsx", ".xls")):
+                df = pd.read_excel(uploaded)
+            else:
+                df = pd.read_csv(uploaded)
+            st.session_state.df = df
+            mapping = detect_columns(df)
+            st.session_state.mapping = mapping
+            df_clean = clean_metrics(df, mapping)
+            st.session_state.df_clean = df_clean
+            underperformers = flag_underperformers(df_clean, mapping)
+            underperformers = detect_fatigue(df_clean, mapping, underperformers)
+            st.session_state.underperformers = underperformers
+
+            # Auto-detect platform from columns
+            detected_pid = detect_platform(list(df.columns))
+            st.session_state.auto_platform_id = detected_pid
+            detected_pf = get_platform(detected_pid)
+
+            n_under = len(underperformers)
+            flag_pct = n_under / len(df) * 100 if len(df) else 0
+
+            n_fatigued = sum(1 for u in underperformers if u.fatigue_score > 0.2)
+            st.markdown(f'''
+            <div class="stat-row">
+                <div class="stat-card"><div class="stat-value">{len(df)}</div><div class="stat-label">Total Ads</div></div>
+                <div class="stat-card"><div class="stat-value red">{n_under}</div><div class="stat-label">Underperformers</div></div>
+                <div class="stat-card"><div class="stat-value purple">{flag_pct:.0f}%</div><div class="stat-label">Flag Rate</div></div>
+                <div class="stat-card"><div class="stat-value" style="color:#FCD34D;">{n_fatigued}</div><div class="stat-label">Fatigued</div></div>
+                <div class="stat-card"><div class="stat-value green">{len(df) - n_under}</div><div class="stat-label">Healthy Ads</div></div>
+            </div>
+            ''', unsafe_allow_html=True)
+
+            # Show detected platform
+            st.markdown(f'''
+            <div style="background:rgba(102,126,234,0.08);border:1px solid rgba(102,126,234,0.2);
+                 border-radius:10px;padding:0.8rem 1rem;margin:0.5rem 0 1rem;font-size:0.85rem;">
+                {detected_pf.icon} <strong>Detected platform: {detected_pf.name}</strong>
+                &mdash; Copy will be generated with {detected_pf.name} formats.
+                Change in the sidebar if incorrect.
+            </div>
+            ''', unsafe_allow_html=True)
+
+            with st.expander("Column Detection"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown(f"**Identifiers:** {', '.join(mapping.identifiers) or 'None'}")
+                    st.markdown(f"**Headlines:** {', '.join(mapping.headlines) or 'None detected'}")
+                    st.markdown(f"**Descriptions:** {', '.join(mapping.descriptions) or 'None detected'}")
+                with c2:
+                    for mt, cn in mapping.metrics.items():
+                        st.markdown(f"**{mt.replace('_', ' ').title()}:** {cn}")
+                if not mapping.headlines and not mapping.descriptions:
+                    st.info("No headline/description columns found (common with Meta/social video ads). "
+                            "The AI will infer creative angles from ad names and metrics.")
+
+            with st.expander("Raw Data", expanded=False):
+                st.dataframe(df, use_container_width=True, height=250)
+
+            if underperformers:
+                # Count fatigue cases
+                fatigued = [u for u in underperformers if u.fatigue_score > 0.2]
+                st.markdown('<div class="section-header"><div class="section-icon red">&#x1F6A9;</div><div><div class="section-title">Underperforming Ads</div><div class="section-subtitle">Ranked by composite weakness score (higher = worse)</div></div></div>', unsafe_allow_html=True)
+
+                if fatigued:
+                    st.markdown(f'''
+                    <div style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);
+                         border-radius:10px;padding:0.8rem 1rem;margin:0.5rem 0 1rem;font-size:0.85rem;">
+                        &#x23F3; <strong>{len(fatigued)} ad{"s" if len(fatigued) != 1 else ""} showing fatigue signals</strong>
+                        &mdash; These ads may have been seen too many times. The copy might not be bad &mdash; the audience is just tired of it.
+                        Fresh creative angles can re-engage them.
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+                for u in underperformers:
+                    label = next((str(u.ad_data.get(c, "")) for c in mapping.identifiers if u.ad_data.get(c)), f"Row {u.index}")
+                    headline = next((str(u.ad_data.get(c, "")) for c in mapping.headlines if u.ad_data.get(c)), "")
+                    reasons_html = "".join(f'<span class="reason-tag">{r}</span>' for r in u.reasons)
+                    fatigue_html = ""
+                    if u.fatigue_signals:
+                        fatigue_tags = "".join(
+                            f'<span style="display:inline-block;background:rgba(251,191,36,0.12);color:#FCD34D;padding:0.2rem 0.6rem;border-radius:6px;font-size:0.72rem;margin:0.15rem 0.25rem 0.15rem 0;font-weight:500;font-family:\'JetBrains Mono\',monospace;">&#x23F3; {s}</span>'
+                            for s in u.fatigue_signals
+                        )
+                        fatigue_html = f'<div style="margin-top:0.4rem;">{fatigue_tags}</div>'
+                    st.markdown(f'''
+                    <div class="underperformer-card">
+                        <div class="ad-label">{label} <span class="score-badge">{u.score}</span></div>
+                        <div class="ad-headline">"{headline}"</div>
+                        {reasons_html}
+                        {fatigue_html}
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+                st.info("Head to **Generate Copy** to create AI-powered replacements.")
+            else:
+                st.success("All ads performing above threshold.")
 
 # ══════════════════════════════════════════════════════════
 # GENERATE
@@ -531,15 +877,31 @@ with tab_generate:
     st.markdown(slot_html, unsafe_allow_html=True)
 
     ready = True
-    if "underperformers" not in st.session_state or not st.session_state.underperformers:
-        st.warning("Upload and analyze a CSV first in **Upload & Analyze**.")
-        ready = False
-    if not brand or not product:
-        st.warning("Enter **Brand** and **Product** in the sidebar.")
-        ready = False
+    _missing = []
     if not has_api_key():
-        st.warning("Enter your **API Key** in the sidebar.")
+        _missing.append(("&#x1F511;", "API Key", "Paste your Anthropic API key in the sidebar"))
+    if not brand or not product:
+        _missing.append(("&#x1F4DD;", "Brand Brief", "Fill in brand name and product in the <strong>Setup</strong> tab"))
+    if "underperformers" not in st.session_state or not st.session_state.underperformers:
+        _missing.append(("&#x1F4E4;", "Ad Data", "Upload a CSV/XLSX in <strong>Upload &amp; Analyze</strong>"))
+
+    if _missing:
         ready = False
+        checklist_html = '<div style="max-width:500px;margin:2rem auto;padding:2rem;">'
+        checklist_html += '<div style="text-align:center;font-size:2rem;margin-bottom:1rem;">&#x1F916;</div>'
+        checklist_html += '<div style="text-align:center;font-size:1rem;font-weight:600;color:rgba(255,255,255,0.6);margin-bottom:1.5rem;">Complete these steps to generate copy</div>'
+        for icon, label, desc in _missing:
+            checklist_html += f'''
+            <div style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.8rem;margin-bottom:0.5rem;
+                 background:rgba(255,107,107,0.04);border:1px solid rgba(255,107,107,0.1);border-radius:10px;">
+                <div style="font-size:1.2rem;flex-shrink:0;">{icon}</div>
+                <div>
+                    <div style="font-weight:600;font-size:0.9rem;color:rgba(255,255,255,0.7);">{label}</div>
+                    <div style="font-size:0.8rem;color:rgba(255,255,255,0.4);">{desc}</div>
+                </div>
+            </div>'''
+        checklist_html += '</div>'
+        st.markdown(checklist_html, unsafe_allow_html=True)
 
     if ready:
         underperformers = st.session_state.underperformers
@@ -565,6 +927,27 @@ with tab_generate:
         </div>
         ''', unsafe_allow_html=True)
 
+        # ── Funnel Stage Selector ──
+        st.markdown('<div class="section-header" style="margin-top:0.5rem;"><div class="section-icon blue">&#x1F3AF;</div><div><div class="section-title">Audience Funnel Stage</div><div class="section-subtitle">Different funnel stages need fundamentally different messaging</div></div></div>', unsafe_allow_html=True)
+
+        _funnel_options = {"Auto-detect (no specific stage)": ""} | {v["label"]: k for k, v in FUNNEL_STAGES.items()}
+        _selected_funnel_label = st.radio(
+            "Funnel stage",
+            list(_funnel_options.keys()),
+            key="funnel_stage",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        _selected_funnel = _funnel_options[_selected_funnel_label]
+
+        if _selected_funnel:
+            st.markdown(f'''
+            <div style="background:rgba(96,165,250,0.06);border:1px solid rgba(96,165,250,0.15);
+                 border-radius:10px;padding:0.8rem 1rem;margin:0.5rem 0 1rem;font-size:0.82rem;color:rgba(255,255,255,0.55);">
+                {FUNNEL_STAGES[_selected_funnel]["guidance"].replace(chr(10), "<br>")}
+            </div>
+            ''', unsafe_allow_html=True)
+
         gen_history = load_history(get_memory_dir())
         if gen_history:
             st.markdown(f'<div style="background:rgba(102,126,234,0.08);border:1px solid rgba(102,126,234,0.2);border-radius:10px;padding:0.8rem 1rem;margin:0.5rem 0 1rem;font-size:0.85rem;">&#x1F9E0; <strong>Memory active</strong> &mdash; {len(gen_history)} previous runs loaded. AI will avoid failed angles.</div>', unsafe_allow_html=True)
@@ -576,6 +959,22 @@ with tab_generate:
             total_steps = len(underperformers) + 1  # +1 for strategy analysis
             progress = st.progress(0, text="Analyzing performance data...")
 
+            # Build brand brief dict from active client
+            _gen_client = active_client()
+            _brand_brief = None
+            if _gen_client:
+                _brand_brief = {
+                    "category": _gen_client.category,
+                    "brand_description": _gen_client.brand_description,
+                    "target_audience": _gen_client.target_audience,
+                    "brand_voice": _gen_client.brand_voice,
+                    "key_differentiators": _gen_client.key_differentiators,
+                    "competitors": _gen_client.competitors,
+                }
+                # Only pass if at least one field is populated
+                if not any(_brand_brief.values()):
+                    _brand_brief = None
+
             # ── Step 1: Run Creative Strategist agent ──
             dataset_summary = build_dataset_summary(df_clean, mapping, len(underperformers))
             strategy_brief = analyze_creative_strategy(
@@ -586,6 +985,8 @@ with tab_generate:
                 top_performers=top_performers,
                 dataset_summary=dataset_summary,
                 memory_insights=insights,
+                brand_brief=_brand_brief,
+                funnel_stage=_selected_funnel,
             )
             st.session_state.strategy_brief = strategy_brief
             progress.progress(1 / total_steps, text="Strategy complete. Generating copy...")
@@ -604,6 +1005,8 @@ with tab_generate:
                     top_performers=top_performers,
                     num_sets=num_ad_sets,
                     strategy_brief=strategy_brief,
+                    brand_brief=_brand_brief,
+                    funnel_stage=_selected_funnel,
                 )
 
                 for ad_set in ad_sets:
@@ -707,7 +1110,10 @@ with tab_generate:
             </div>
             ''', unsafe_allow_html=True)
 
-            # Build display table showing complete ad sets
+            # Build display — card-style per ad set with rationale
+            _has_rationale = any(ad_set.get("rationale") for ad_set in all_ad_sets)
+
+            # Compact table view
             display_rows = []
             for ad_set in all_ad_sets:
                 row = {"Source Ad": ad_set.get("original_ad", "")}
@@ -719,6 +1125,19 @@ with tab_generate:
 
             st.dataframe(pd.DataFrame(display_rows), use_container_width=True, height=400)
 
+            # Rationale breakdown (expandable per ad set)
+            if _has_rationale:
+                with st.expander("View Rationale for Each Variation", expanded=False):
+                    for idx, ad_set in enumerate(all_ad_sets):
+                        rationale = ad_set.get("rationale", "")
+                        if rationale:
+                            st.markdown(
+                                f"**{idx+1}. {ad_set.get('original_ad', 'Ad')}** "
+                                f"— *{ad_set.get('angle', '')}*"
+                            )
+                            st.caption(rationale)
+                            st.markdown("---")
+
             # Downloads
             st.markdown("---")
             dl1, dl2 = st.columns(2)
@@ -729,6 +1148,7 @@ with tab_generate:
                     for slot in gen_pf.slots:
                         row[slot.label] = ad_set.get(slot.key, "")
                         row[f"{slot.label} chars"] = len(ad_set.get(slot.key, ""))
+                    row["rationale"] = ad_set.get("rationale", "")
                     csv_rows.append(row)
                 st.download_button(
                     "Download All Ad Sets",
@@ -742,6 +1162,46 @@ with tab_generate:
                     "ad_variations.json", "application/json", use_container_width=True,
                 )
 
+            # ── Template Previews ──
+            _preview_client = active_client()
+            _preview_templates = list_templates(_preview_client.client_id) if _preview_client else []
+            _preview_templates = [t for t in _preview_templates if t.slots]  # Only templates with slots
+
+            if _preview_templates:
+                st.markdown("---")
+                st.markdown('<div class="section-header"><div class="section-icon orange">&#x1F5BC;</div><div><div class="section-title">Creative Preview</div><div class="section-subtitle">See your copy on your ad templates</div></div></div>', unsafe_allow_html=True)
+
+                _sel_tpl_name = st.selectbox(
+                    "Template",
+                    [t.name for t in _preview_templates],
+                    key="preview_template_select",
+                )
+                _sel_tpl = next((t for t in _preview_templates if t.name == _sel_tpl_name), None)
+
+                if _sel_tpl:
+                    previews = render_all_previews(_preview_client.client_id, _sel_tpl, all_ad_sets)
+                    if previews:
+                        # Grid of previews — 3 columns
+                        cols = st.columns(min(3, len(previews)))
+                        for i, (label, img) in enumerate(previews):
+                            with cols[i % 3]:
+                                import io as _io
+                                buf = _io.BytesIO()
+                                img.save(buf, format="PNG")
+                                st.image(buf.getvalue(), caption=label, use_container_width=True)
+
+                        # Download all previews
+                        zip_bytes = export_previews_zip(previews, template_name=_sel_tpl.template_id)
+                        st.download_button(
+                            "Download All Previews (ZIP)",
+                            zip_bytes,
+                            f"previews_{_sel_tpl.template_id}.zip",
+                            "application/zip",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.warning("Could not render previews — check that the template image exists.")
+
             st.info("Head to **Publish** or **Export** to push your new copy live.")
 
 # ══════════════════════════════════════════════════════════
@@ -751,7 +1211,15 @@ with tab_publish:
     st.markdown('<div class="section-header"><div class="section-icon orange">&#x1F680;</div><div><div class="section-title">Publish to Ad Platforms</div><div class="section-subtitle">Push generated ad variations directly to Meta Ads and Google Ads</div></div></div>', unsafe_allow_html=True)
 
     if "all_ad_sets" not in st.session_state and "all_headlines" not in st.session_state:
-        st.info("Generate copy first in **Generate Copy**, then publish here.")
+        st.markdown('''
+        <div style="text-align:center;padding:4rem 2rem;color:rgba(255,255,255,0.4);">
+            <div style="font-size:2.5rem;margin-bottom:1rem;">&#x1F680;</div>
+            <div style="font-size:1.1rem;font-weight:600;color:rgba(255,255,255,0.6);margin-bottom:0.5rem;">No copy generated yet</div>
+            <div style="font-size:0.85rem;max-width:400px;margin:0 auto;">
+                Generate ad copy in the <strong>Generate Copy</strong> tab first, then come back here to push it live to Meta or Google Ads.
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
     else:
         pub_meta, pub_google = st.tabs(["Meta Ads", "Google Ads"])
 
@@ -1159,7 +1627,16 @@ with tab_export:
                     bulk_rows.append(row)
                 st.download_button("Bulk Upload CSV", pd.DataFrame(bulk_rows).to_csv(index=False), "bulk_upload.csv", "text/csv", use_container_width=True)
     else:
-        st.info("Generate copy first in **Generate Copy**, then export here.")
+        st.markdown('''
+        <div style="text-align:center;padding:4rem 2rem;color:rgba(255,255,255,0.4);">
+            <div style="font-size:2.5rem;margin-bottom:1rem;">&#x1F3A8;</div>
+            <div style="font-size:1.1rem;font-weight:600;color:rgba(255,255,255,0.6);margin-bottom:0.5rem;">Nothing to export yet</div>
+            <div style="font-size:0.85rem;max-width:400px;margin:0 auto;">
+                Generate ad copy in the <strong>Generate Copy</strong> tab. Then come back for
+                Figma JSON, Google Sheets CSV, and platform-specific bulk upload files.
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════
 # MEMORY
@@ -1171,7 +1648,19 @@ with tab_memory:
 
     history = load_history(get_memory_dir())
     if not history:
-        st.markdown('<div class="setup-card"><h3>No experiments yet</h3><p>Run the pipeline to start building memory. Each run will reference past experiments to avoid failed angles.</p></div>', unsafe_allow_html=True)
+        st.markdown('''
+        <div style="text-align:center;padding:4rem 2rem;color:rgba(255,255,255,0.4);">
+            <div style="font-size:2.5rem;margin-bottom:1rem;">&#x1F9E0;</div>
+            <div style="font-size:1.1rem;font-weight:600;color:rgba(255,255,255,0.6);margin-bottom:0.5rem;">No experiments yet</div>
+            <div style="font-size:0.85rem;max-width:450px;margin:0 auto;line-height:1.6;">
+                Run the pipeline (Upload &rarr; Generate) to start building memory.
+                Each run is logged. On subsequent runs, the AI references past experiments
+                to avoid failed angles and double down on what worked.
+                <br><br>
+                <strong>The more you run it, the smarter it gets.</strong>
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
     else:
         th = sum(len(r.generated_headlines) for r in history)
         td = sum(len(r.generated_descriptions) for r in history)
@@ -1183,6 +1672,62 @@ with tab_memory:
             <div class="stat-card"><div class="stat-value">{sum(r.total_ads for r in history)}</div><div class="stat-label">Ads Analyzed</div></div>
         </div>
         ''', unsafe_allow_html=True)
+
+        # ── Performance Trends ──
+        if len(history) >= 2:
+            st.markdown('<div class="section-header"><div class="section-icon green">&#x1F4C8;</div><div><div class="section-title">Optimization Trends</div><div class="section-subtitle">Are your optimizations improving performance over cycles?</div></div></div>', unsafe_allow_html=True)
+
+            trend_data = []
+            for run in history:
+                row = {
+                    "Run": run.run_id.replace("run_", "").replace("_", " "),
+                    "Date": run.timestamp[:10],
+                    "Ads Analyzed": run.total_ads,
+                    "Underperformers": run.underperformers_count,
+                    "Flag Rate (%)": round(run.underperformers_count / run.total_ads * 100, 1) if run.total_ads > 0 else 0,
+                    "Headlines Generated": len(run.generated_headlines),
+                    "Descriptions Generated": len(run.generated_descriptions),
+                }
+                trend_data.append(row)
+
+            trend_df = pd.DataFrame(trend_data)
+
+            tc1, tc2 = st.columns(2)
+            with tc1:
+                st.markdown("**Underperformer Flag Rate Over Time**")
+                st.area_chart(trend_df.set_index("Date")["Flag Rate (%)"], color="#FF6B6B", height=200)
+            with tc2:
+                st.markdown("**Variations Generated Per Run**")
+                gen_df = trend_df.set_index("Date")[["Headlines Generated", "Descriptions Generated"]]
+                st.bar_chart(gen_df, color=["#E8FF47", "#60A5FA"], height=200)
+
+            # Trend direction indicator
+            if len(trend_data) >= 2:
+                first_flag = trend_data[0]["Flag Rate (%)"]
+                last_flag = trend_data[-1]["Flag Rate (%)"]
+                delta = last_flag - first_flag
+                if delta < -5:
+                    trend_msg = f"Flag rate dropped from {first_flag}% to {last_flag}% — your optimizations are working."
+                    trend_color = "rgba(74,222,128,0.12)"
+                    trend_border = "rgba(74,222,128,0.25)"
+                    trend_icon = "&#x2705;"
+                elif delta > 5:
+                    trend_msg = f"Flag rate increased from {first_flag}% to {last_flag}% — consider new creative angles."
+                    trend_color = "rgba(255,107,107,0.08)"
+                    trend_border = "rgba(255,107,107,0.2)"
+                    trend_icon = "&#x26A0;"
+                else:
+                    trend_msg = f"Flag rate is stable around {last_flag}%. Keep iterating to find breakthrough angles."
+                    trend_color = "rgba(96,165,250,0.08)"
+                    trend_border = "rgba(96,165,250,0.2)"
+                    trend_icon = "&#x2139;"
+
+                st.markdown(f'''
+                <div style="background:{trend_color};border:1px solid {trend_border};
+                     border-radius:10px;padding:0.8rem 1rem;margin:0.5rem 0 1.5rem;font-size:0.85rem;">
+                    {trend_icon} {trend_msg}
+                </div>
+                ''', unsafe_allow_html=True)
 
         st.markdown("**Accumulated Insights**")
         st.code(summarize_insights(history), language="text")

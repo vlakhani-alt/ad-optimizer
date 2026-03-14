@@ -22,12 +22,27 @@ def _slugify(name: str) -> str:
     return s.strip("-") or "default"
 
 
+CATEGORIES = [
+    "", "SaaS", "E-commerce/DTC", "Finance/Fintech", "Healthcare/Wellness",
+    "Education/EdTech", "Real Estate", "Travel/Hospitality", "Food & Beverage",
+    "Fashion/Beauty", "Technology/Electronics", "Entertainment/Media",
+    "Automotive", "B2B Services", "Non-profit", "Other",
+]
+
+
 @dataclass
 class ClientConfig:
     client_id: str
     name: str
     brand: str = ""
     product: str = ""
+    # Brand brief (rich context for AI)
+    category: str = ""
+    brand_description: str = ""
+    target_audience: str = ""
+    brand_voice: str = ""
+    key_differentiators: str = ""
+    competitors: str = ""
     # Anthropic (optional per-client override)
     anthropic_api_key: str = ""
     # Meta Ads

@@ -97,6 +97,8 @@ class UnderperformerResult:
     ad_data: dict
     reasons: list[str]
     score: float  # 0-1, higher = worse performer
+    fatigue_signals: list[str] = field(default_factory=list)  # e.g. "High frequency (4.2) with low CTR"
+    fatigue_score: float = 0.0  # 0-1, higher = more likely fatigued
 
 
 def detect_columns(df: pd.DataFrame) -> ColumnMapping:
@@ -288,6 +290,85 @@ def flag_underperformers(
     return results
 
 
+def detect_fatigue(
+    df: pd.DataFrame, mapping: ColumnMapping, underperformers: list[UnderperformerResult]
+) -> list[UnderperformerResult]:
+    """Detect creative fatigue signals in underperforming ads.
+
+    Fatigue = the ad used to work but has been shown too many times.
+    Key signals:
+    - High impressions/reach relative to dataset but declining engagement
+    - High frequency (>3x) with below-median CTR
+    - High impressions but very low CTR (ad is being shown but nobody clicks)
+
+    This is distinct from "bad copy" — fatigue means the creative is worn out,
+    not that it was never good.
+    """
+    if not underperformers:
+        return underperformers
+
+    freq_col = mapping.metrics.get("frequency")
+    imp_col = mapping.metrics.get("impressions")
+    reach_col = mapping.metrics.get("reach")
+    ctr_col = mapping.metrics.get("ctr")
+    clicks_col = mapping.metrics.get("clicks") or mapping.metrics.get("link_clicks")
+
+    # Compute dataset-level medians for context
+    medians = {}
+    for key in ("frequency", "impressions", "ctr", "reach"):
+        col = mapping.metrics.get(key)
+        if col and col in df.columns:
+            series = pd.to_numeric(df[col], errors="coerce").dropna()
+            if len(series) > 1:
+                medians[key] = float(series.median())
+
+    for u in underperformers:
+        signals = []
+        fatigue = 0.0
+
+        # Signal 1: High frequency with low CTR
+        if freq_col and ctr_col:
+            freq_val = pd.to_numeric(pd.Series([u.ad_data.get(freq_col)]), errors="coerce").iloc[0]
+            ctr_val = pd.to_numeric(pd.Series([u.ad_data.get(ctr_col)]), errors="coerce").iloc[0]
+            if pd.notna(freq_val) and pd.notna(ctr_val):
+                freq_median = medians.get("frequency", 2.0)
+                ctr_median = medians.get("ctr", 0.01)
+                if freq_val > 3.0 and ctr_val < ctr_median:
+                    signals.append(f"High frequency ({freq_val:.1f}x) with below-median CTR")
+                    fatigue += 0.4
+                elif freq_val > 2.5 and ctr_val < ctr_median * 0.8:
+                    signals.append(f"Elevated frequency ({freq_val:.1f}x) with weak CTR")
+                    fatigue += 0.25
+
+        # Signal 2: High impressions but very low CTR (oversaturated)
+        if imp_col and ctr_col:
+            imp_val = pd.to_numeric(pd.Series([u.ad_data.get(imp_col)]), errors="coerce").iloc[0]
+            ctr_val = pd.to_numeric(pd.Series([u.ad_data.get(ctr_col)]), errors="coerce").iloc[0]
+            if pd.notna(imp_val) and pd.notna(ctr_val):
+                imp_median = medians.get("impressions", 1000)
+                ctr_median = medians.get("ctr", 0.01)
+                if imp_val > imp_median * 2 and ctr_val < ctr_median * 0.7:
+                    signals.append(f"High exposure ({imp_val:,.0f} imps, 2x+ median) but CTR is 30%+ below median")
+                    fatigue += 0.35
+
+        # Signal 3: High reach relative to impressions (broad distribution, low engagement)
+        if reach_col and imp_col and clicks_col:
+            reach_val = pd.to_numeric(pd.Series([u.ad_data.get(reach_col)]), errors="coerce").iloc[0]
+            imp_val = pd.to_numeric(pd.Series([u.ad_data.get(imp_col)]), errors="coerce").iloc[0]
+            clicks_val = pd.to_numeric(pd.Series([u.ad_data.get(clicks_col)]), errors="coerce").iloc[0]
+            if pd.notna(reach_val) and pd.notna(imp_val) and pd.notna(clicks_val) and reach_val > 0:
+                freq_est = imp_val / reach_val
+                click_rate = clicks_val / imp_val if imp_val > 0 else 0
+                if freq_est > 2.5 and click_rate < 0.01:
+                    signals.append(f"Estimated frequency {freq_est:.1f}x with <1% click rate — audience saturation")
+                    fatigue += 0.3
+
+        u.fatigue_signals = signals
+        u.fatigue_score = min(fatigue, 1.0)
+
+    return underperformers
+
+
 def load_and_analyze(path: str) -> tuple[pd.DataFrame, ColumnMapping, list[UnderperformerResult]]:
     """Full pipeline: load file, detect columns, clean data, flag underperformers."""
     if path.endswith(".xlsx") or path.endswith(".xls"):
@@ -305,6 +386,7 @@ def load_and_analyze(path: str) -> tuple[pd.DataFrame, ColumnMapping, list[Under
 
     df = clean_metrics(df, mapping)
     underperformers = flag_underperformers(df, mapping)
+    underperformers = detect_fatigue(df, mapping, underperformers)
 
     print(f"\n--- Analysis ---")
     print(f"Total ads:        {len(df)}")

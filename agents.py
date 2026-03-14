@@ -312,6 +312,49 @@ def _detect_creative_type(underperformer: dict) -> str:
     return "text"
 
 
+FUNNEL_STAGES = {
+    "cold": {
+        "label": "Cold — Prospecting / Awareness",
+        "guidance": (
+            "AUDIENCE STAGE: COLD (Prospecting / Awareness)\n"
+            "These people have NEVER heard of the brand. They are not looking for a solution.\n"
+            "Copy strategy:\n"
+            "- Lead with the PROBLEM or curiosity, not the product\n"
+            "- Use pattern interrupts — stop the scroll with something unexpected\n"
+            "- Social proof and authority signals build instant credibility\n"
+            "- Avoid jargon, product features, or pricing — they don't care yet\n"
+            "- Goal: get them to stop, engage, and want to learn more"
+        ),
+    },
+    "warm": {
+        "label": "Warm — Consideration / Retargeting",
+        "guidance": (
+            "AUDIENCE STAGE: WARM (Consideration / Retargeting)\n"
+            "These people have engaged before — visited the site, watched a video, or interacted with an ad.\n"
+            "Copy strategy:\n"
+            "- Reference their prior engagement indirectly ('Still thinking about it?', 'You were looking at...')\n"
+            "- Focus on differentiation — why THIS solution over competitors\n"
+            "- Handle objections: price, trust, complexity, timing\n"
+            "- Testimonials and case studies are powerful here\n"
+            "- Goal: move them from 'interested' to 'ready to act'"
+        ),
+    },
+    "hot": {
+        "label": "Hot — Conversion / Bottom Funnel",
+        "guidance": (
+            "AUDIENCE STAGE: HOT (Conversion / Bottom Funnel)\n"
+            "These people are ready to buy. They know the brand and product.\n"
+            "Copy strategy:\n"
+            "- Lead with the OFFER: discounts, free trials, limited time, bonus\n"
+            "- Create urgency and scarcity ('Last chance', 'Ends tonight', '3 spots left')\n"
+            "- Remove friction: free shipping, money-back guarantee, no commitment\n"
+            "- Direct CTA — tell them exactly what to do\n"
+            "- Goal: convert NOW"
+        ),
+    },
+}
+
+
 def _build_context(
     brand: str,
     product: str,
@@ -319,6 +362,8 @@ def _build_context(
     memory_insights: str,
     top_performers: list[dict],
     creative_type: str = "",
+    brand_brief: dict | None = None,
+    funnel_stage: str = "",
 ) -> str:
     """Build the user message context for all agents.
 
@@ -341,10 +386,31 @@ def _build_context(
     lines = [
         f"Brand: {brand}",
         f"Product: {product}",
+    ]
+    # Inject funnel stage guidance
+    if funnel_stage and funnel_stage in FUNNEL_STAGES:
+        lines.append("")
+        lines.append(FUNNEL_STAGES[funnel_stage]["guidance"])
+        lines.append("")
+    # Inject rich brand brief when available
+    if brand_brief:
+        if brand_brief.get("category"):
+            lines.append(f"Category: {brand_brief['category']}")
+        if brand_brief.get("brand_description"):
+            lines.append(f"Brand Overview: {brand_brief['brand_description']}")
+        if brand_brief.get("target_audience"):
+            lines.append(f"Target Audience: {brand_brief['target_audience']}")
+        if brand_brief.get("brand_voice"):
+            lines.append(f"Brand Voice & Tone: {brand_brief['brand_voice']}")
+        if brand_brief.get("key_differentiators"):
+            lines.append(f"Key Differentiators: {brand_brief['key_differentiators']}")
+        if brand_brief.get("competitors"):
+            lines.append(f"Competitors: {brand_brief['competitors']}")
+    lines.extend([
         "",
         "=== UNDERPERFORMING AD (generate better alternatives) ===",
         json.dumps(trimmed, indent=2, default=str),
-    ]
+    ])
 
     # If there's no headline/description in the data, add explicit instruction
     has_copy = any(k.lower() in ("headline", "description", "primary text", "title", "body")
@@ -578,6 +644,8 @@ def analyze_creative_strategy(
     dataset_summary: dict,
     memory_insights: str = "",
     creative_type: str = "",
+    brand_brief: dict | None = None,
+    funnel_stage: str = "",
 ) -> dict:
     """Run the Creative Strategist agent to analyze performance data.
 
@@ -633,12 +701,30 @@ def analyze_creative_strategy(
         )
 
     platform = get_platform(platform_id)
+    brand_section = f"Brand: {brand}\nProduct: {product}"
+    if brand_brief:
+        if brand_brief.get("category"):
+            brand_section += f"\nCategory: {brand_brief['category']}"
+        if brand_brief.get("brand_description"):
+            brand_section += f"\nBrand Overview: {brand_brief['brand_description']}"
+        if brand_brief.get("target_audience"):
+            brand_section += f"\nTarget Audience: {brand_brief['target_audience']}"
+        if brand_brief.get("brand_voice"):
+            brand_section += f"\nBrand Voice: {brand_brief['brand_voice']}"
+        if brand_brief.get("key_differentiators"):
+            brand_section += f"\nKey Differentiators: {brand_brief['key_differentiators']}"
+        if brand_brief.get("competitors"):
+            brand_section += f"\nCompetitors: {brand_brief['competitors']}"
+    funnel_context = ""
+    if funnel_stage and funnel_stage in FUNNEL_STAGES:
+        funnel_context = f"\nFunnel Stage: {FUNNEL_STAGES[funnel_stage]['label']}\n{FUNNEL_STAGES[funnel_stage]['guidance']}"
+
     prompt = f"""Analyze this ad performance data and produce a strategic creative brief.
 
-Brand: {brand}
-Product: {product}
+{brand_section}
 Platform: {platform.name}
 {creative_context}
+{funnel_context}
 
 === DATASET SUMMARY ===
 {json.dumps(dataset_summary, indent=2, default=str)}
@@ -772,7 +858,8 @@ Output ONLY valid JSON — an array of objects. Each object is one complete ad v
 [
   {{
 {chr(10).join(f'    "{s.key}": "text here",' for s in platform.slots)}
-    "angle": "brief angle description (e.g. urgency, social proof, pain point)"
+    "angle": "brief angle description (e.g. urgency, social proof, pain point)",
+    "rationale": "2-3 sentences explaining WHY this copy will perform better. Reference: (1) what data pattern from the underperformer you're addressing, (2) which psychological trigger you're leveraging and why it fits this audience, (3) what evidence from top performers or the strategy brief supports this angle."
   }}
 ]
 
@@ -789,6 +876,8 @@ def generate_ad_sets(
     num_sets: int = DEFAULT_AD_SETS,
     max_retries: int = 2,
     strategy_brief: dict | None = None,
+    brand_brief: dict | None = None,
+    funnel_stage: str = "",
 ) -> list[dict]:
     """Generate complete, coherent ad variations for an underperforming ad.
 
@@ -802,11 +891,15 @@ def generate_ad_sets(
             data-driven patterns, psychological analysis, and per-ad briefs.
             When provided, the copywriter uses this analysis instead of
             guessing from raw data.
+        brand_brief: Rich brand context dict with keys: category,
+            brand_description, target_audience, brand_voice,
+            key_differentiators, competitors.
 
     Returns:
-        list of dicts, each containing all slot keys + "angle".
+        list of dicts, each containing all slot keys + "angle" + "rationale".
         e.g. [
-            {"primary_text": "...", "headline": "...", "link_description": "...", "angle": "urgency"},
+            {"primary_text": "...", "headline": "...", "link_description": "...",
+             "angle": "urgency", "rationale": "..."},
             ...
         ]
     """
@@ -814,7 +907,8 @@ def generate_ad_sets(
     creative_type = _detect_creative_type(underperformer)
     system = _build_ad_set_system_prompt(platform, creative_type=creative_type)
     context = _build_context(brand, product, underperformer, memory_insights, top_performers,
-                             creative_type=creative_type)
+                             creative_type=creative_type, brand_brief=brand_brief,
+                             funnel_stage=funnel_stage)
 
     # Inject strategy brief into context if available
     if strategy_brief:
