@@ -182,7 +182,8 @@ def _needs_bootstrap() -> bool:
     available on the login page as a fallback.
     """
     try:
-        if st.secrets.get("auth", {}).get("client_id"):
+        google = st.secrets.get("auth", {}).get("google", {})
+        if google.get("client_id"):
             return False
         if st.secrets.get("auth", {}).get("credentials"):
             return False
@@ -193,10 +194,10 @@ def _needs_bootstrap() -> bool:
 
 
 def _google_auth_available() -> bool:
-    """Check if Google OAuth is configured."""
+    """Check if Google OAuth is configured via [auth.google] in secrets."""
     try:
-        auth = st.secrets.get("auth", {})
-        return bool(auth.get("client_id") and auth.get("client_secret"))
+        google = st.secrets.get("auth", {}).get("google", {})
+        return bool(google.get("client_id") and google.get("client_secret"))
     except Exception:
         return False
 
