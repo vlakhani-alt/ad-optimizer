@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from analyzer import detect_columns, clean_metrics, flag_underperformers, detect_fatigue
 from memory import (
     load_history, save_run, generate_run_id, summarize_insights,
-    extract_top_performers, RunRecord,
+    extract_top_performers, RunRecord, detect_outcomes,
+    _update_last_run_outcomes, _extract_ad_id, outcome_summary,
+    score_hypotheses,
 )
 from agents import (
     generate_ad_sets, DEFAULT_AD_SETS,
@@ -131,6 +133,7 @@ section[data-testid="stSidebar"] .stMarkdown li {
 .stat-value.green { color: var(--success); }
 .stat-value.accent { color: var(--accent); }
 .stat-value.amber { color: #FCD34D; }
+.stat-value.green { color: #4ADE80; }
 .stat-label {
     font-size: 0.68rem; color: var(--text-muted);
     text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.2rem; font-weight: 600;
@@ -516,6 +519,40 @@ def render_optimize():
         if detected_pid:
             st.session_state.auto_platform_id = detected_pid
 
+        # ── Feedback loop: track outcomes from previous run ──
+        _mem_dir = get_memory_dir()
+        _prev_history = load_history(_mem_dir)
+        if _prev_history:
+            # Build current ad ID sets for matching
+            _under_ids = set()
+            for u in underperformers:
+                _uid = _extract_ad_id(u.ad_data, mapping.identifiers)
+                if _uid:
+                    _under_ids.add(_uid)
+            _top = extract_top_performers(df_clean, mapping, n=10)
+            _top_ids = set()
+            for t in _top:
+                _tid = _extract_ad_id(t, mapping.identifiers)
+                if _tid:
+                    _top_ids.add(_tid)
+            _all_ids = set()
+            for idx in df_clean.index:
+                for col in mapping.identifiers:
+                    val = str(df_clean.at[idx, col]).strip()
+                    if val and val != "nan":
+                        _all_ids.add(val)
+                        break
+            outcomes = detect_outcomes(_under_ids, _top_ids, _all_ids, _prev_history)
+            if outcomes:
+                _update_last_run_outcomes(outcomes, _mem_dir)
+                st.session_state.latest_outcomes = outcomes
+                n_improved = sum(1 for o in outcomes if o["status"] == "improved")
+                n_bad = sum(1 for o in outcomes if o["status"] == "still_bad")
+                if n_improved > 0:
+                    st.toast(f"🔄 Feedback loop: {n_improved} ads improved since last run!", icon="✅")
+                if n_bad > 0:
+                    st.toast(f"🔄 {n_bad} ads still underperforming — adjusting strategy", icon="⚠️")
+
     # ── If no data yet, show guidance ──
     if "underperformers" not in st.session_state:
         st.markdown('''
@@ -641,14 +678,16 @@ def render_optimize():
             st.session_state.strategy_brief = strategy_brief
             progress.progress(1 / total_steps, text="Strategy complete. Generating copy...")
 
-            for i, u in enumerate(underperformers):
-                ad_label = next((str(u.ad_data.get(c, "")) for c in mapping.identifiers if u.ad_data.get(c)), f"Row {u.index}")
-                progress.progress((i + 2) / total_steps, text=f"Writing: {ad_label} ({i+1}/{len(underperformers)})")
+            # Parallel generation — run all underperformers concurrently
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            _ad_labels = []
+            _futures = {}
 
-                ad_sets = generate_ad_sets(
+            def _gen_one(u_data, label):
+                return label, generate_ad_sets(
                     platform_id=selected_platform_id,
                     brand=brand, product=product,
-                    underperformer=u.ad_data,
+                    underperformer=u_data,
                     memory_insights=insights,
                     top_performers=top_performers,
                     num_sets=num_ad_sets,
@@ -656,9 +695,26 @@ def render_optimize():
                     brand_brief=_brand_brief,
                     funnel_stage=_selected_funnel,
                 )
-                for ad_set in ad_sets:
-                    ad_set["original_ad"] = ad_label
-                    all_ad_sets.append(ad_set)
+
+            max_workers = min(8, len(underperformers))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for u in underperformers:
+                    ad_label = next((str(u.ad_data.get(c, "")) for c in mapping.identifiers if u.ad_data.get(c)), f"Row {u.index}")
+                    fut = executor.submit(_gen_one, u.ad_data, ad_label)
+                    _futures[fut] = ad_label
+
+                done_count = 0
+                for fut in as_completed(_futures):
+                    done_count += 1
+                    lbl = _futures[fut]
+                    progress.progress((done_count + 1) / total_steps, text=f"Generated: {lbl} ({done_count}/{len(underperformers)})")
+                    try:
+                        label, ad_sets = fut.result()
+                        for ad_set in ad_sets:
+                            ad_set["original_ad"] = label
+                            all_ad_sets.append(ad_set)
+                    except Exception as e:
+                        st.warning(f"Failed to generate for {lbl}: {e}")
 
             progress.progress(1.0, text="Done!")
             st.session_state.all_ad_sets = all_ad_sets
@@ -1309,40 +1365,56 @@ def render_memory():
     mem_client = active_client()
     mem_label = f" — {mem_client.name}" if mem_client else ""
 
-    st.markdown(f'''
-    <div class="page-header">
-        <div class="icon" style="background:rgba(96,165,250,0.12);">🧠</div>
-        <div>
-            <div class="title">Experiment Memory{mem_label}</div>
-            <div class="sub">Every run is logged. The AI learns from past results each cycle.</div>
-        </div>
-    </div>
-    ''', unsafe_allow_html=True)
+    st.markdown(f'<div class="page-header"><div class="icon" style="background:rgba(96,165,250,0.12);">🧠</div><div><div class="title">Experiment Memory{mem_label}</div><div class="sub">Every run is logged. The AI learns from past results each cycle.</div></div></div>', unsafe_allow_html=True)
 
     history = load_history(get_memory_dir())
     if not history:
-        st.markdown('''
-        <div class="empty-state">
-            <div class="icon">🧠</div>
-            <div class="title">No experiments yet</div>
-            <div class="desc">Run the Optimize pipeline to start building memory. Each run is logged. The more you run it, the smarter it gets.</div>
-        </div>
-        ''', unsafe_allow_html=True)
+        st.markdown('<div class="empty-state"><div class="icon">🧠</div><div class="title">No experiments yet</div><div class="desc">Run the Optimize pipeline to start building memory. Each run is logged. The more you run it, the smarter it gets.</div></div>', unsafe_allow_html=True)
         return
 
     th = sum(len(r.generated_headlines) for r in history)
     td = sum(len(r.generated_descriptions) for r in history)
-    st.markdown(f'''
-    <div class="stat-row">
-        <div class="stat-card"><div class="stat-value accent">{len(history)}</div><div class="stat-label">Runs</div></div>
-        <div class="stat-card"><div class="stat-value">{th}</div><div class="stat-label">Headlines</div></div>
-        <div class="stat-card"><div class="stat-value">{td}</div><div class="stat-label">Descriptions</div></div>
-        <div class="stat-card"><div class="stat-value">{sum(r.total_ads for r in history)}</div><div class="stat-label">Ads Analyzed</div></div>
-    </div>
-    ''', unsafe_allow_html=True)
+    o_stats = outcome_summary(history)
+
+    # ── Stats bar ──
+    st.markdown(f'<div class="stat-row"><div class="stat-card"><div class="stat-value accent">{len(history)}</div><div class="stat-label">Runs</div></div><div class="stat-card"><div class="stat-value">{th + td}</div><div class="stat-label">Variations</div></div><div class="stat-card"><div class="stat-value">{sum(r.total_ads for r in history)}</div><div class="stat-label">Ads Analyzed</div></div><div class="stat-card"><div class="stat-value {"green" if o_stats["improvement_rate"] > 0.5 else "red"}">{o_stats["improvement_rate"]:.0%}</div><div class="stat-label">Improvement Rate</div></div></div>', unsafe_allow_html=True)
+
+    # ── Feedback Loop Section ──
+    if o_stats["total_tracked"] > 0:
+        st.markdown("### 🔄 Feedback Loop")
+        fl1, fl2, fl3 = st.columns(3)
+        with fl1:
+            st.metric("Ads Improved", o_stats["improved_count"],
+                       delta=f"{o_stats['improvement_rate']:.0%} success rate")
+        with fl2:
+            st.metric("Still Underperforming", o_stats["still_bad_count"],
+                       delta=f"-{o_stats['still_bad_count']}" if o_stats["still_bad_count"] else "0",
+                       delta_color="inverse")
+        with fl3:
+            st.metric("Ads Removed/Paused", o_stats["gone_count"])
+
+        # Show validated vs failed strategies
+        scores = score_hypotheses(history)
+        if scores["validated"] or scores["failed"]:
+            sv1, sv2 = st.columns(2)
+            with sv1:
+                st.markdown("**✅ Validated Strategies**")
+                if scores["validated"]:
+                    for hyp, count in sorted(scores["validated"].items(), key=lambda x: -x[1])[:8]:
+                        st.markdown(f"- ✓ **{hyp}** ×{count}")
+                else:
+                    st.caption("No validated strategies yet")
+            with sv2:
+                st.markdown("**❌ Failed Strategies**")
+                if scores["failed"]:
+                    for hyp, count in sorted(scores["failed"].items(), key=lambda x: -x[1])[:8]:
+                        st.markdown(f"- ✗ ~~{hyp}~~ ×{count}")
+                else:
+                    st.caption("No failed strategies yet")
 
     # ── Trends ──
     if len(history) >= 2:
+        st.markdown("### 📈 Trends")
         trend_data = []
         for run in history:
             trend_data.append({
@@ -1371,18 +1443,28 @@ def render_memory():
             else:
                 st.info(f"Flag rate stable around {last_flag}%.")
 
-    st.markdown("**Accumulated Insights**")
+    st.markdown("### 📋 Accumulated Insights")
     st.code(summarize_insights(history), language="text")
 
-    st.markdown("**Run History**")
+    st.markdown("### 📁 Run History")
     for run in reversed(history):
-        with st.expander(f"{run.run_id} — {run.timestamp[:10]} — {len(run.generated_headlines)} headlines"):
+        _run_outcomes = run.outcomes if run.outcomes else []
+        _improved = sum(1 for o in _run_outcomes if o["status"] == "improved")
+        _badge = f" · ✅ {_improved} improved" if _improved else ""
+        with st.expander(f"{run.run_id} — {run.timestamp[:10]} — {len(run.generated_headlines)} headlines{_badge}"):
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown(f"**Ads:** {run.total_ads} · **Flagged:** {run.underperformers_count}")
             with c2:
                 st.markdown(f"**Headlines:** {len(run.generated_headlines)} · **Descriptions:** {len(run.generated_descriptions)}")
+            if _run_outcomes:
+                st.markdown("**Outcomes (from next run):**")
+                for o in _run_outcomes[:10]:
+                    _icon = "✅" if o["status"] == "improved" else "❌" if o["status"] == "still_bad" else "⏸️"
+                    _hyps = ", ".join(o.get("hypotheses_suggested", [])[:2]) or "no specific hypothesis"
+                    st.markdown(f"- {_icon} **{o['ad_id'][:50]}** — {o['detail']} (strategy: _{_hyps}_)")
             if run.generated_headlines:
+                st.markdown("**Generated:**")
                 for h in run.generated_headlines[:5]:
                     st.markdown(f"- `{h.get('headline', '')}` — _{h.get('hypothesis', '')}_")
 
