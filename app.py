@@ -137,16 +137,23 @@ section[data-testid="stSidebar"] .stMarkdown li {
 }
 
 /* ── Ad cards ── */
+.underperformer-scroll {
+    max-height: 520px; overflow-y: auto; padding-right: 0.3rem;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+}
+.underperformer-scroll::-webkit-scrollbar { width: 5px; }
+.underperformer-scroll::-webkit-scrollbar-track { background: transparent; }
+.underperformer-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 .ad-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 12px; padding: 1rem; margin-bottom: 0.6rem;
-    cursor: pointer; transition: all 0.15s ease;
+    transition: all 0.15s ease;
 }
 .ad-card:hover { border-color: var(--border-hover); }
 .ad-card.selected { border-color: var(--accent); background: var(--accent-dim); }
 .ad-card.bad { border-left: 3px solid var(--danger); }
 .ad-card.fatigued { border-left: 3px solid #FCD34D; }
-.ad-card .name { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.2rem; }
+.ad-card .name { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.2rem; overflow: hidden; }
 .ad-card .meta { font-size: 0.75rem; color: var(--text-muted); }
 .ad-card .score {
     float: right; background: rgba(255,107,107,0.12); color: var(--danger);
@@ -158,11 +165,11 @@ section[data-testid="stSidebar"] .stMarkdown li {
     padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.68rem;
     font-weight: 500; margin-top: 0.3rem;
 }
+.reason-tags { margin-top: 0.3rem; display: flex; flex-wrap: wrap; gap: 0.2rem; }
 .reason-tag {
-    display: inline-block; background: rgba(255,107,107,0.1); color: #FFA0A0;
+    background: rgba(255,107,107,0.1); color: #FFA0A0;
     padding: 0.15rem 0.5rem; border-radius: 5px; font-size: 0.7rem;
-    margin: 0.1rem 0.2rem 0.1rem 0; font-weight: 500;
-    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500; font-family: 'JetBrains Mono', monospace;
 }
 
 /* ── Generated copy cards ── */
@@ -453,35 +460,47 @@ def render_optimize():
         ''', unsafe_allow_html=True)
         return
 
-    # ── Platform & generation controls ──
-    _hdr_col, _plat_col, _var_col = st.columns([5, 2, 1])
+    # ── Platform control ──
+    _hdr_col, _plat_col = st.columns([5, 2])
     with _plat_col:
         platform_options = {p.name: p.id for p in list_platforms()}
         auto_detected = st.session_state.get("auto_platform_id")
-        default_idx = 0
         if auto_detected:
-            for i, name in enumerate(platform_options.keys()):
+            # Auto-detected from CSV — pre-select it
+            default_idx = 0
+            platform_names = list(platform_options.keys())
+            for i, name in enumerate(platform_names):
                 if platform_options[name] == auto_detected:
                     default_idx = i
                     break
-        selected_platform_name = st.selectbox(
-            "Platform", list(platform_options.keys()), index=default_idx,
-            key="platform_selector",
-        )
-        selected_platform_id = platform_options[selected_platform_name]
-    with _var_col:
-        num_ad_sets = st.slider("Variations", 1, 10, DEFAULT_AD_SETS, key="num_ad_sets")
+            selected_platform_name = st.selectbox(
+                "Platform", platform_names, index=default_idx,
+                key="platform_selector",
+            )
+            selected_platform_id = platform_options[selected_platform_name]
+        else:
+            # No auto-detect — force user to choose
+            platform_names = ["Select a platform…"] + list(platform_options.keys())
+            selected_platform_name = st.selectbox(
+                "Platform", platform_names, index=0,
+                key="platform_selector",
+            )
+            if selected_platform_name == "Select a platform…":
+                selected_platform_id = None
+            else:
+                selected_platform_id = platform_options[selected_platform_name]
 
-    gen_platform = get_platform(selected_platform_id)
+    gen_platform = get_platform(selected_platform_id) if selected_platform_id else None
 
     # ── Page header ──
     with _hdr_col:
+        _plat_label = f"{gen_platform.icon} {gen_platform.name} · " if gen_platform else ""
         st.markdown(f'''
         <div class="page-header">
             <div class="icon" style="background:var(--accent-dim);">⚡</div>
             <div>
                 <div class="title">Optimize — {cl.name}</div>
-                <div class="sub">{gen_platform.icon} {gen_platform.name} · Upload → Analyze → Generate in one view</div>
+                <div class="sub">{_plat_label}Upload → Analyze → Generate in one view</div>
             </div>
         </div>
         ''', unsafe_allow_html=True)
@@ -562,46 +581,56 @@ def render_optimize():
     with col_left:
         st.markdown(f"**Underperformers** ({n_under})")
 
+        # Build all cards into a single scrollable container
+        _cards_html = []
         for i, u in enumerate(underperformers):
             label = next((str(u.ad_data.get(c, "")) for c in mapping.identifiers if u.ad_data.get(c)), f"Row {u.index}")
             headline = next((str(u.ad_data.get(c, "")) for c in mapping.headlines if u.ad_data.get(c)), "")
-            reasons_html = "".join(f'<span class="reason-tag">{r}</span>' for r in u.reasons)
+            reasons_html = '<div class="reason-tags">' + "".join(f'<div class="reason-tag">{r}</div>' for r in u.reasons) + '</div>'
 
             fatigue_html = ""
             if u.fatigue_signals:
-                fatigue_tags = "".join(f'<span class="ad-card fatigue-badge">⏳ {s}</span>' for s in u.fatigue_signals)
+                fatigue_tags = "".join(f'<div class="fatigue-badge">⏳ {s}</div>' for s in u.fatigue_signals)
                 fatigue_html = f'<div style="margin-top:0.3rem;">{fatigue_tags}</div>'
 
             card_class = "fatigued" if u.fatigue_score > 0.2 else "bad"
-            st.markdown(f'''
+            _cards_html.append(f'''
             <div class="ad-card {card_class}">
-                <div class="name">{label} <span class="score">{u.score}</span></div>
+                <div class="name">{label} <div class="score">Score: {u.score}</div></div>
                 {"<div class='meta'>" + headline[:60] + "</div>" if headline else ""}
                 {reasons_html}
                 {fatigue_html}
-            </div>
-            ''', unsafe_allow_html=True)
+            </div>''')
+
+        st.markdown(
+            '<div class="underperformer-scroll">' + "".join(_cards_html) + '</div>',
+            unsafe_allow_html=True,
+        )
 
     with col_right:
         # ── Generation controls ──
+        st.caption("🎯 **Funnel stage** — controls the tone and intent of generated copy")
         _funnel_options = {"Auto": ""} | {v["label"]: k for k, v in FUNNEL_STAGES.items()}
-        gc1, gc2 = st.columns([3, 1])
-        with gc1:
-            _selected_funnel_label = st.radio(
-                "Funnel", list(_funnel_options.keys()),
-                key="funnel_stage", horizontal=True, label_visibility="collapsed",
-            )
+        _selected_funnel_label = st.radio(
+            "Funnel stage", list(_funnel_options.keys()),
+            key="funnel_stage", horizontal=True, label_visibility="collapsed",
+        )
         _selected_funnel = _funnel_options[_selected_funnel_label]
 
+        # ── Variations slider ──
+        num_ad_sets = st.slider("Variations per ad", 1, 10, DEFAULT_AD_SETS, key="num_ad_sets")
+
         # ── Readiness check ──
-        _ready = has_api_key() and brand and product
+        _ready = has_api_key() and brand and product and selected_platform_id
         if not _ready:
             missing_parts = []
             if not has_api_key():
                 missing_parts.append("API key")
             if not brand or not product:
                 missing_parts.append("brand brief")
-            st.warning(f"Missing: {', '.join(missing_parts)}. Configure in Settings.")
+            if not selected_platform_id:
+                missing_parts.append("platform")
+            st.warning(f"Missing: {', '.join(missing_parts)}. {'Select a platform above.' if 'platform' in missing_parts else 'Configure in Settings.'}")
 
         # ── Generate button ──
         if _ready and st.button("Generate Ad Copy", type="primary", use_container_width=True):
