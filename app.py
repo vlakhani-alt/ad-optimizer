@@ -5,6 +5,8 @@ compact header, zero-chrome-before-content philosophy.
 """
 from __future__ import annotations
 
+__version__ = "0.6.0"
+
 import streamlit as st
 import pandas as pd
 import json
@@ -434,6 +436,8 @@ with st.sidebar:
         st.caption(f"🧠 {len(history)} runs · {total_var} variations")
     else:
         st.caption("🧠 No runs yet")
+
+    st.markdown(f'<div style="position:fixed;bottom:0.8rem;font-size:0.65rem;color:rgba(255,255,255,0.25);font-family:monospace;">v{__version__}</div>', unsafe_allow_html=True)
 
 # Get common values
 brand = cl.brand if cl else ""
