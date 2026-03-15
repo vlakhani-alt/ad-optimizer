@@ -137,13 +137,6 @@ section[data-testid="stSidebar"] .stMarkdown li {
 }
 
 /* ── Ad cards ── */
-.underperformer-scroll {
-    max-height: 520px; overflow-y: auto; padding-right: 0.3rem;
-    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
-}
-.underperformer-scroll::-webkit-scrollbar { width: 5px; }
-.underperformer-scroll::-webkit-scrollbar-track { background: transparent; }
-.underperformer-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 .ad-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 12px; padding: 1rem; margin-bottom: 0.6rem;
@@ -460,15 +453,15 @@ def render_optimize():
         ''', unsafe_allow_html=True)
         return
 
-    # ── Platform control ──
+    # ── Platform selection (required first) ──
     _hdr_col, _plat_col = st.columns([5, 2])
     with _plat_col:
         platform_options = {p.name: p.id for p in list_platforms()}
+        platform_names = list(platform_options.keys())
+        # Check for auto-detected platform from previous upload
         auto_detected = st.session_state.get("auto_platform_id")
         if auto_detected:
-            # Auto-detected from CSV — pre-select it
             default_idx = 0
-            platform_names = list(platform_options.keys())
             for i, name in enumerate(platform_names):
                 if platform_options[name] == auto_detected:
                     default_idx = i
@@ -479,34 +472,27 @@ def render_optimize():
             )
             selected_platform_id = platform_options[selected_platform_name]
         else:
-            # No auto-detect — force user to choose
-            platform_names = ["Select a platform…"] + list(platform_options.keys())
+            _opts = ["Select a platform…"] + platform_names
             selected_platform_name = st.selectbox(
-                "Platform", platform_names, index=0,
+                "Platform", _opts, index=0,
                 key="platform_selector",
             )
-            if selected_platform_name == "Select a platform…":
-                selected_platform_id = None
-            else:
-                selected_platform_id = platform_options[selected_platform_name]
+            selected_platform_id = platform_options.get(selected_platform_name)
 
     gen_platform = get_platform(selected_platform_id) if selected_platform_id else None
 
     # ── Page header ──
     with _hdr_col:
         _plat_label = f"{gen_platform.icon} {gen_platform.name} · " if gen_platform else ""
-        st.markdown(f'''
-        <div class="page-header">
-            <div class="icon" style="background:var(--accent-dim);">⚡</div>
-            <div>
-                <div class="title">Optimize — {cl.name}</div>
-                <div class="sub">{_plat_label}Upload → Analyze → Generate in one view</div>
-            </div>
-        </div>
-        ''', unsafe_allow_html=True)
+        st.markdown(f'<div class="page-header"><div class="icon" style="background:var(--accent-dim);">⚡</div><div><div class="title">Optimize — {cl.name}</div><div class="sub">{_plat_label}Upload → Analyze → Generate in one view</div></div></div>', unsafe_allow_html=True)
+
+    # ── Gate: platform must be selected before upload ──
+    if not selected_platform_id:
+        st.markdown('<div class="empty-state"><div class="icon">🎯</div><div class="title">Select a platform to begin</div><div class="desc">Choose Meta Ads, Google Ads, TikTok, LinkedIn, or another platform above. This informs how your ad data is analyzed and how new copy is generated.</div></div>', unsafe_allow_html=True)
+        return
 
     # ── File Upload (compact, at top) ──
-    uploaded = st.file_uploader("Drop ad performance CSV or XLSX",
+    uploaded = st.file_uploader(f"Drop {gen_platform.name} performance CSV or XLSX",
                                 type=["csv", "xlsx", "xls"],
                                 key="file_upload",
                                 label_visibility="collapsed")
@@ -525,8 +511,10 @@ def render_optimize():
         underperformers = detect_fatigue(df_clean, mapping, underperformers)
         st.session_state.underperformers = underperformers
 
+        # Auto-detect platform from columns (may override selection)
         detected_pid = detect_platform(list(df.columns))
-        st.session_state.auto_platform_id = detected_pid
+        if detected_pid:
+            st.session_state.auto_platform_id = detected_pid
 
     # ── If no data yet, show guidance ──
     if "underperformers" not in st.session_state:
@@ -580,32 +568,18 @@ def render_optimize():
 
     with col_left:
         st.markdown(f"**Underperformers** ({n_under})")
-
-        # Build all cards into a single scrollable container
-        _cards_html = []
-        for i, u in enumerate(underperformers):
-            label = next((str(u.ad_data.get(c, "")) for c in mapping.identifiers if u.ad_data.get(c)), f"Row {u.index}")
-            headline = next((str(u.ad_data.get(c, "")) for c in mapping.headlines if u.ad_data.get(c)), "")
-            reasons_html = '<div class="reason-tags">' + "".join(f'<div class="reason-tag">{r}</div>' for r in u.reasons) + '</div>'
-
-            fatigue_html = ""
-            if u.fatigue_signals:
-                fatigue_tags = "".join(f'<div class="fatigue-badge">⏳ {s}</div>' for s in u.fatigue_signals)
-                fatigue_html = f'<div style="margin-top:0.3rem;">{fatigue_tags}</div>'
-
-            card_class = "fatigued" if u.fatigue_score > 0.2 else "bad"
-            _cards_html.append(f'''
-            <div class="ad-card {card_class}">
-                <div class="name">{label} <div class="score">Score: {u.score}</div></div>
-                {"<div class='meta'>" + headline[:60] + "</div>" if headline else ""}
-                {reasons_html}
-                {fatigue_html}
-            </div>''')
-
-        st.markdown(
-            '<div class="underperformer-scroll">' + "".join(_cards_html) + '</div>',
-            unsafe_allow_html=True,
-        )
+        _scroll = st.container(height=500)
+        with _scroll:
+            for i, u in enumerate(underperformers):
+                label = next((str(u.ad_data.get(c, "")) for c in mapping.identifiers if u.ad_data.get(c)), f"Row {u.index}")
+                headline = next((str(u.ad_data.get(c, "")) for c in mapping.headlines if u.ad_data.get(c)), "")
+                reasons = "".join(f'<div class="reason-tag">{r}</div>' for r in u.reasons)
+                fatigue = ""
+                if u.fatigue_signals:
+                    fatigue = "".join(f'<div class="fatigue-badge">\u23f3 {s}</div>' for s in u.fatigue_signals)
+                meta = f'<div class="meta">{headline[:60]}</div>' if headline else ""
+                card_class = "fatigued" if u.fatigue_score > 0.2 else "bad"
+                st.markdown(f'<div class="ad-card {card_class}"><div class="name">{label} <div class="score">Score: {u.score}</div></div>{meta}<div class="reason-tags">{reasons}</div>{fatigue}</div>', unsafe_allow_html=True)
 
     with col_right:
         # ── Generation controls ──
@@ -621,16 +595,14 @@ def render_optimize():
         num_ad_sets = st.slider("Variations per ad", 1, 10, DEFAULT_AD_SETS, key="num_ad_sets")
 
         # ── Readiness check ──
-        _ready = has_api_key() and brand and product and selected_platform_id
+        _ready = has_api_key() and brand and product
         if not _ready:
             missing_parts = []
             if not has_api_key():
                 missing_parts.append("API key")
             if not brand or not product:
                 missing_parts.append("brand brief")
-            if not selected_platform_id:
-                missing_parts.append("platform")
-            st.warning(f"Missing: {', '.join(missing_parts)}. {'Select a platform above.' if 'platform' in missing_parts else 'Configure in Settings.'}")
+            st.warning(f"Missing: {', '.join(missing_parts)}. Configure in Settings.")
 
         # ── Generate button ──
         if _ready and st.button("Generate Ad Copy", type="primary", use_container_width=True):
