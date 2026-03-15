@@ -329,7 +329,8 @@ def _clear_pipeline_state():
     for key in ["all_headlines", "all_descriptions", "all_ad_sets",
                 "all_slot_results", "strategy_brief", "underperformers", "df",
                 "df_clean", "mapping", "push_results", "meta_connected",
-                "google_connected"]:
+                "google_connected", "gen_platform_id", "auto_platform_id",
+                "meta_account_name", "google_account_name"]:
         st.session_state.pop(key, None)
 
 # ══════════════════════════════════════════════════════════
@@ -1183,11 +1184,27 @@ def render_settings():
     with st.expander("Client Management"):
         st.caption(f"ID: `{setup_client.client_id}` · Created {setup_client.created_at[:10] if setup_client.created_at else 'recently'}")
         if has_permission("delete_clients"):
-            if st.button("Delete Client", key="delete_client_btn"):
-                delete_client(setup_client.client_id)
-                st.session_state.pop("active_client_id", None)
-                _clear_pipeline_state()
-                st.rerun()
+            if "confirm_delete_client" not in st.session_state:
+                st.session_state.confirm_delete_client = False
+
+            if not st.session_state.confirm_delete_client:
+                if st.button("Delete Client", key="delete_client_btn"):
+                    st.session_state.confirm_delete_client = True
+                    st.rerun()
+            else:
+                st.warning(f"Permanently delete **{setup_client.name}** and all its data (templates, memory, credentials)?")
+                dc1, dc2 = st.columns(2)
+                with dc1:
+                    if st.button("Yes, Delete", type="primary", key="confirm_delete_yes"):
+                        delete_client(setup_client.client_id)
+                        st.session_state.pop("active_client_id", None)
+                        st.session_state.confirm_delete_client = False
+                        _clear_pipeline_state()
+                        st.rerun()
+                with dc2:
+                    if st.button("Cancel", key="confirm_delete_no"):
+                        st.session_state.confirm_delete_client = False
+                        st.rerun()
         else:
             st.caption("Only admins can delete clients.")
 
@@ -1369,18 +1386,34 @@ def render_memory():
                     st.markdown(f"- `{h.get('headline', '')}` — _{h.get('hypothesis', '')}_")
 
     st.markdown("---")
-    if st.button("Clear All Memory"):
-        _mdir = get_memory_dir()
-        if _mdir:
-            mem_file = _mdir / "experiment_log.json"
-        else:
-            mem_file = Path(__file__).parent / "memory" / "experiment_log.json"
-        if mem_file.exists():
-            mem_file.unlink()
-        for key in ["all_headlines", "all_descriptions", "all_ad_sets",
-                    "all_slot_results", "underperformers", "df", "df_clean", "mapping"]:
-            st.session_state.pop(key, None)
-        st.rerun()
+    if "confirm_clear_memory" not in st.session_state:
+        st.session_state.confirm_clear_memory = False
+
+    if not st.session_state.confirm_clear_memory:
+        if st.button("Clear All Memory", key="clear_mem_btn"):
+            st.session_state.confirm_clear_memory = True
+            st.rerun()
+    else:
+        st.warning("This will permanently delete all experiment history for this client. This cannot be undone.")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            if st.button("Yes, Delete All Memory", type="primary", key="confirm_clear_yes"):
+                _mdir = get_memory_dir()
+                if _mdir:
+                    mem_file = _mdir / "experiment_log.json"
+                else:
+                    mem_file = Path(__file__).parent / "memory" / "experiment_log.json"
+                if mem_file.exists():
+                    mem_file.unlink()
+                for key in ["all_headlines", "all_descriptions", "all_ad_sets",
+                            "all_slot_results", "underperformers", "df", "df_clean", "mapping"]:
+                    st.session_state.pop(key, None)
+                st.session_state.confirm_clear_memory = False
+                st.rerun()
+        with cc2:
+            if st.button("Cancel", key="confirm_clear_no"):
+                st.session_state.confirm_clear_memory = False
+                st.rerun()
 
 
 # ══════════════════════════════════════════════════════════

@@ -24,7 +24,8 @@ _client = None
 
 def _get_client() -> anthropic.Anthropic:
     global _client
-    _client = anthropic.Anthropic()
+    if _client is None:
+        _client = anthropic.Anthropic()
     return _client
 
 

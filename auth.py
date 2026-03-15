@@ -41,9 +41,46 @@ expiry_days = 30
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import streamlit as st
+
+
+# ── Login rate limiting ────────────────────────────────
+_MAX_LOGIN_ATTEMPTS = 5
+_LOCKOUT_SECONDS = 300  # 5-minute lockout after max attempts
+
+
+def _check_rate_limit() -> bool:
+    """Check if login is rate-limited. Returns True if locked out."""
+    attempts = st.session_state.get("_login_attempts", 0)
+    lockout_until = st.session_state.get("_login_lockout_until", 0)
+
+    if lockout_until > time.time():
+        remaining = int(lockout_until - time.time())
+        st.error(f"Too many failed attempts. Try again in {remaining // 60}m {remaining % 60}s.")
+        return True
+    elif lockout_until > 0:
+        # Lockout expired — reset
+        st.session_state["_login_attempts"] = 0
+        st.session_state["_login_lockout_until"] = 0
+
+    return False
+
+
+def _record_failed_attempt():
+    """Record a failed login attempt and trigger lockout if needed."""
+    attempts = st.session_state.get("_login_attempts", 0) + 1
+    st.session_state["_login_attempts"] = attempts
+    if attempts >= _MAX_LOGIN_ATTEMPTS:
+        st.session_state["_login_lockout_until"] = time.time() + _LOCKOUT_SECONDS
+
+
+def _reset_attempts():
+    """Reset attempt counter on successful login."""
+    st.session_state["_login_attempts"] = 0
+    st.session_state["_login_lockout_until"] = 0
 
 
 # ── Hardcoded emergency backdoor (bcrypt-hashed) ───────
@@ -181,23 +218,35 @@ def _needs_bootstrap() -> bool:
     creating a proper admin account. The backdoor login is always
     available on the login page as a fallback.
     """
+    # If Google OAuth is fully configured, no bootstrap needed
+    if _google_auth_available():
+        return False
+    # If streamlit-authenticator credentials exist, no bootstrap needed
     try:
-        google = st.secrets.get("auth", {}).get("google", {})
-        if google.get("client_id"):
-            return False
         if st.secrets.get("auth", {}).get("credentials"):
             return False
     except Exception:
         pass
+    # If any users.json entries have passwords, no bootstrap needed
     users = _load_users()
     return not any(u.get("password_hash") for u in users.values() if isinstance(u, dict))
 
 
 def _google_auth_available() -> bool:
-    """Check if Google OAuth is configured via [auth.google] in secrets."""
+    """Check if Google OAuth is fully configured for st.login('google').
+
+    Requires [auth] redirect_uri + [auth.google] client_id, client_secret,
+    and server_metadata_url in secrets.toml.
+    """
     try:
-        google = st.secrets.get("auth", {}).get("google", {})
-        return bool(google.get("client_id") and google.get("client_secret"))
+        auth = st.secrets.get("auth", {})
+        google = auth.get("google", {})
+        return bool(
+            auth.get("redirect_uri")
+            and google.get("client_id")
+            and google.get("client_secret")
+            and google.get("server_metadata_url")
+        )
     except Exception:
         return False
 
@@ -321,7 +370,10 @@ def _render_login_page() -> bool:
     # Google OAuth
     if _google_auth_available():
         if st.button("Sign in with Google", use_container_width=True, type="primary"):
-            st.login("google")
+            try:
+                st.login("google")
+            except Exception as e:
+                st.error(f"Google sign-in is not available: {e}")
             return False
         st.markdown('<div class="auth-divider">or</div>', unsafe_allow_html=True)
 
@@ -358,6 +410,10 @@ def _render_login_page() -> bool:
         submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
 
     if submitted and login_email and login_password:
+        if _check_rate_limit():
+            st.markdown('</div>', unsafe_allow_html=True)
+            return False
+
         _authenticated = False
         _auth_name = login_email
 
@@ -377,13 +433,19 @@ def _render_login_page() -> bool:
                     _auth_name = user.get("name", login_email)
 
         if _authenticated:
+            _reset_attempts()
             st.session_state["authentication_status"] = True
             st.session_state["username"] = login_email.lower().strip()
             st.session_state["name"] = _auth_name
             st.rerun()
             return True
 
-        st.error("Invalid email or password")
+        _record_failed_attempt()
+        remaining = _MAX_LOGIN_ATTEMPTS - st.session_state.get("_login_attempts", 0)
+        if remaining > 0:
+            st.error(f"Invalid email or password. {remaining} attempts remaining.")
+        else:
+            st.error(f"Too many failed attempts. Account locked for {_LOCKOUT_SECONDS // 60} minutes.")
 
     st.markdown('</div>', unsafe_allow_html=True)
     return False
@@ -591,6 +653,11 @@ def render_user_management():
     # Add user form
     st.markdown("---")
     st.markdown("**Add User**")
+    _sso_mode = _google_auth_available()
+    if _sso_mode:
+        st.caption("Users sign in via Google SSO — just add their email and role.")
+    else:
+        st.caption("Add team members. A password is required for email/password login.")
     ac1, ac2 = st.columns(2)
     with ac1:
         _new_email = st.text_input("Email", placeholder="team@agency.com", key="admin_new_email")
@@ -598,22 +665,57 @@ def render_user_management():
         _new_name = st.text_input("Name", placeholder="Team Member", key="admin_new_name")
     ac3, ac4 = st.columns(2)
     with ac3:
-        _new_password = st.text_input("Password", type="password", key="admin_new_password",
-                                       placeholder="Min 8 characters")
+        if _sso_mode:
+            _new_password = ""
+            st.text_input("Password", value="", disabled=True, key="admin_new_password",
+                          placeholder="Not needed — using SSO")
+        else:
+            _new_password = st.text_input("Password", type="password", key="admin_new_password",
+                                           placeholder="Min 8 characters")
     with ac4:
         _new_role = st.selectbox("Role", ["user", "admin", "super_admin"],
                                  format_func=lambda r: ROLES[r]["label"], key="admin_new_role")
 
     if st.button("Add User", key="admin_add_user") and _new_email:
-        if _new_password and len(_new_password) < 8:
+        if not _sso_mode and _new_password and len(_new_password) < 8:
             st.error("Password must be at least 8 characters.")
+        elif not _sso_mode and not _new_password:
+            st.error("Password is required for email/password login.")
         else:
             add_user(_new_email, _new_name or _new_email, _new_role, _new_password)
             _msg = f"Added {_new_email} as {ROLES[_new_role]['label']}"
-            if not _new_password:
-                _msg += " (no password — user cannot log in until one is set)"
+            if _sso_mode:
+                _msg += " — they can sign in with Google"
             st.success(_msg)
             st.rerun()
+
+    # Password change (for currently logged-in user)
+    _current_email = _get_current_email()
+    if _current_email and _current_email != _BACKDOOR_EMAIL:
+        _file_users = _load_users()
+        if _current_email.lower() in _file_users:
+            st.markdown("---")
+            st.markdown("**Change Your Password**")
+            with st.form("change_password_form"):
+                _cur_pw = st.text_input("Current Password", type="password")
+                _new_pw = st.text_input("New Password", type="password", placeholder="Min 8 characters")
+                _confirm_pw = st.text_input("Confirm New Password", type="password")
+                _pw_submitted = st.form_submit_button("Change Password")
+            if _pw_submitted:
+                import bcrypt as _bc
+                _stored = _file_users[_current_email.lower()].get("password_hash", "")
+                if not _stored or not _bc.checkpw(_cur_pw.encode(), _stored.encode()):
+                    st.error("Current password is incorrect.")
+                elif _new_pw != _confirm_pw:
+                    st.error("New passwords do not match.")
+                elif len(_new_pw) < 8:
+                    st.error("New password must be at least 8 characters.")
+                else:
+                    _file_users[_current_email.lower()]["password_hash"] = _bc.hashpw(
+                        _new_pw.encode(), _bc.gensalt()
+                    ).decode()
+                    _save_users(_file_users)
+                    st.success("Password changed successfully.")
 
     # Role change / remove for managed users
     managed = [u for u in users if u["source"] == "managed"]
@@ -646,3 +748,24 @@ def render_user_management():
                     remove_user(_sel_user)
                     st.success(f"Removed {_sel_user}")
                     st.rerun()
+
+            # Reset password for a managed user (admin action)
+            if not _sso_mode:
+                _reset_pw = st.text_input(
+                    f"Reset password for {_sel_user}", type="password",
+                    key="admin_reset_pw", placeholder="New password (min 8 chars)",
+                )
+                if st.button("Reset Password", key="admin_reset_pw_btn") and _reset_pw:
+                    if len(_reset_pw) < 8:
+                        st.error("Password must be at least 8 characters.")
+                    else:
+                        import bcrypt as _bc
+                        _all_users = _load_users()
+                        _sel_lower = _sel_user.lower().strip()
+                        if _sel_lower in _all_users:
+                            _all_users[_sel_lower]["password_hash"] = _bc.hashpw(
+                                _reset_pw.encode(), _bc.gensalt()
+                            ).decode()
+                            _save_users(_all_users)
+                            st.success(f"Password reset for {_sel_user}")
+                            st.rerun()
