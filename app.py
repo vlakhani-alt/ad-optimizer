@@ -391,6 +391,8 @@ with st.sidebar:
             _clear_pipeline_state()
             if chosen.anthropic_api_key:
                 os.environ["ANTHROPIC_API_KEY"] = chosen.anthropic_api_key
+            else:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
             st.rerun()
 
     cl = active_client()
@@ -413,41 +415,14 @@ with st.sidebar:
             st.session_state.page = page_id
             st.rerun()
 
+    # ── Status indicators ──
     st.markdown("---")
-
-    # ── API Key (compact) ──
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        api_key = st.text_input("API Key", type="password", key="api_key",
-                                label_visibility="collapsed", placeholder="sk-ant-...")
-        if api_key:
-            os.environ["ANTHROPIC_API_KEY"] = api_key
-            if cl:
-                cl.anthropic_api_key = api_key
-                save_client(cl)
-            st.rerun()
-    else:
+    if has_api_key():
         st.markdown('<span style="font-size:0.78rem;color:rgba(74,222,128,0.8);">✓ API Key</span>', unsafe_allow_html=True)
-
-    # ── Platform selector ──
-    platform_options = {p.name: p.id for p in list_platforms()}
-    auto_detected = st.session_state.get("auto_platform_id")
-    default_idx = 0
-    if auto_detected:
-        for i, name in enumerate(platform_options.keys()):
-            if platform_options[name] == auto_detected:
-                default_idx = i
-                break
-    selected_platform_name = st.selectbox(
-        "Platform", list(platform_options.keys()), index=default_idx,
-        key="platform_selector", label_visibility="collapsed",
-    )
-    selected_platform_id = platform_options[selected_platform_name]
-
-    # ── Generation controls ──
-    num_ad_sets = st.slider("Variations / ad", 1, 10, DEFAULT_AD_SETS, key="num_ad_sets")
+    elif cl:
+        st.markdown('<span style="font-size:0.78rem;color:rgba(255,107,107,0.8);">⚠ No API Key → Settings</span>', unsafe_allow_html=True)
 
     # ── Memory summary ──
-    st.markdown("---")
     mem_dir = get_memory_dir()
     history = load_history(mem_dir)
     total_var = sum(len(r.generated_headlines) for r in history) if history else 0
@@ -466,8 +441,6 @@ current_page = st.session_state.page
 # PAGE: OPTIMIZE — The core workspace
 # ══════════════════════════════════════════════════════════
 def render_optimize():
-    gen_platform = get_platform(selected_platform_id)
-
     # ── No client gate ──
     if not cl:
         st.markdown('''
@@ -479,16 +452,38 @@ def render_optimize():
         ''', unsafe_allow_html=True)
         return
 
+    # ── Platform & generation controls ──
+    _hdr_col, _plat_col, _var_col = st.columns([5, 2, 1])
+    with _plat_col:
+        platform_options = {p.name: p.id for p in list_platforms()}
+        auto_detected = st.session_state.get("auto_platform_id")
+        default_idx = 0
+        if auto_detected:
+            for i, name in enumerate(platform_options.keys()):
+                if platform_options[name] == auto_detected:
+                    default_idx = i
+                    break
+        selected_platform_name = st.selectbox(
+            "Platform", list(platform_options.keys()), index=default_idx,
+            key="platform_selector",
+        )
+        selected_platform_id = platform_options[selected_platform_name]
+    with _var_col:
+        num_ad_sets = st.slider("Variations", 1, 10, DEFAULT_AD_SETS, key="num_ad_sets")
+
+    gen_platform = get_platform(selected_platform_id)
+
     # ── Page header ──
-    st.markdown(f'''
-    <div class="page-header">
-        <div class="icon" style="background:var(--accent-dim);">⚡</div>
-        <div>
-            <div class="title">Optimize — {cl.name}</div>
-            <div class="sub">{gen_platform.icon} {gen_platform.name} · Upload → Analyze → Generate in one view</div>
+    with _hdr_col:
+        st.markdown(f'''
+        <div class="page-header">
+            <div class="icon" style="background:var(--accent-dim);">⚡</div>
+            <div>
+                <div class="title">Optimize — {cl.name}</div>
+                <div class="sub">{gen_platform.icon} {gen_platform.name} · Upload → Analyze → Generate in one view</div>
+            </div>
         </div>
-    </div>
-    ''', unsafe_allow_html=True)
+        ''', unsafe_allow_html=True)
 
     # ── File Upload (compact, at top) ──
     uploaded = st.file_uploader("Drop ad performance CSV or XLSX",
@@ -1012,7 +1007,10 @@ def render_publish():
 
     # ── EXPORT TAB ──
     with tab_export:
-        gen_pid = st.session_state.get("gen_platform_id", selected_platform_id)
+        gen_pid = st.session_state.get("gen_platform_id") or st.session_state.get("platform_selector", "meta")
+        # Resolve display name to ID if needed
+        if gen_pid and gen_pid not in [p.id for p in list_platforms()]:
+            gen_pid = {p.name: p.id for p in list_platforms()}.get(gen_pid, "meta")
         gen_pf = get_platform(gen_pid)
 
         st.markdown('''
@@ -1139,6 +1137,46 @@ def render_settings():
             _changed = True
     if _changed:
         save_client(setup_client)
+
+    # ── API Key ──
+    st.markdown("---")
+    st.markdown("### API Key")
+    st.caption("Anthropic API key for AI-powered ad generation. Stored per-client.")
+
+    _current_key = setup_client.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    if _current_key and len(_current_key) > 10:
+        st.markdown(
+            f'<span style="font-size:0.82rem;color:rgba(74,222,128,0.8);">'
+            f'✓ Key set: <code>sk-ant-...{_current_key[-6:]}</code></span>',
+            unsafe_allow_html=True,
+        )
+    elif _current_key:
+        st.markdown(
+            '<span style="font-size:0.82rem;color:rgba(74,222,128,0.8);">✓ Key set</span>',
+            unsafe_allow_html=True,
+        )
+
+    _kc1, _kc2 = st.columns([3, 1])
+    with _kc1:
+        _new_key = st.text_input(
+            "Anthropic API Key", type="password", key="settings_api_key",
+            placeholder="sk-ant-api03-...",
+            help="Get your key from console.anthropic.com",
+        )
+    with _kc2:
+        st.markdown("&nbsp;", unsafe_allow_html=True)  # vertical spacer
+        if st.button("Clear Key", key="clear_api_key"):
+            setup_client.anthropic_api_key = ""
+            save_client(setup_client)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            st.rerun()
+
+    if _new_key and _new_key != setup_client.anthropic_api_key:
+        setup_client.anthropic_api_key = _new_key
+        os.environ["ANTHROPIC_API_KEY"] = _new_key
+        save_client(setup_client)
+        st.success("API key saved for this client.")
+        st.rerun()
 
     # ── Client Management ──
     st.markdown("---")
