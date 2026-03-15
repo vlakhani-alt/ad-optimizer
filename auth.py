@@ -463,9 +463,7 @@ def render_logout_button():
     except Exception:
         pass
 
-    if st.session_state.get("authentication_status") and (
-        _password_auth_available() or _users_json_auth_available()
-    ):
+    if st.session_state.get("authentication_status"):
         name = st.session_state.get("name", "User")
         role = get_current_role()
         role_label = ROLES.get(role, {}).get("label", role)
