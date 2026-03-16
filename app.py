@@ -5,7 +5,7 @@ compact header, zero-chrome-before-content philosophy.
 """
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 import streamlit as st
 import pandas as pd
@@ -29,6 +29,7 @@ from agents import (
     list_platforms, get_platform, detect_platform,
     FUNNEL_STAGES,
 )
+from export import build_export_workbook
 from platforms import MetaAdsPlatform, GoogleAdsPlatform
 from clients import (
     list_clients, load_client, save_client, create_client,
@@ -803,10 +804,31 @@ def render_optimize():
                 </div>
                 ''', unsafe_allow_html=True)
 
-            # Quick downloads
+            # Downloads
             st.markdown("---")
-            dl1, dl2 = st.columns(2)
+            _xlsx_bytes = build_export_workbook(
+                client_name=cl.name if cl else "Unknown",
+                platform_name=gen_pf.name,
+                platform_icon=gen_pf.icon,
+                slots=gen_pf.slots,
+                ad_sets=all_ad_sets,
+                underperformers=underperformers,
+                strategy_brief=st.session_state.get("strategy_brief"),
+                brand=brand, product=product,
+                total_ads=len(df_clean),
+                num_underperformers=len(underperformers),
+            )
+            _client_slug = (cl.name if cl else "export").replace(" ", "_").lower()
+            _date_slug = datetime.now().strftime("%Y%m%d")
+            dl1, dl2, dl3 = st.columns(3)
             with dl1:
+                st.download_button(
+                    "Download Excel", _xlsx_bytes,
+                    f"{_client_slug}_ad_variations_{_date_slug}.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True, type="primary",
+                )
+            with dl2:
                 csv_rows = []
                 for ad_set in all_ad_sets:
                     row = {"source_ad": ad_set.get("original_ad", ""), "angle": ad_set.get("angle", "")}
@@ -816,7 +838,7 @@ def render_optimize():
                     csv_rows.append(row)
                 st.download_button("Download CSV", pd.DataFrame(csv_rows).to_csv(index=False),
                                    "ad_variations.csv", "text/csv", use_container_width=True)
-            with dl2:
+            with dl3:
                 st.download_button("Download JSON", json.dumps(all_ad_sets, indent=2),
                                    "ad_variations.json", "application/json", use_container_width=True)
 
@@ -1120,18 +1142,33 @@ The plugin duplicates each frame for every variation. Recommended plugins:
             </div>
             ''', unsafe_allow_html=True)
 
+            # Export Excel (primary)
+            _pub_client = active_client()
+            _ex_xlsx = build_export_workbook(
+                client_name=_pub_client.name if _pub_client else "Unknown",
+                platform_name=gen_pf.name,
+                platform_icon=gen_pf.icon,
+                slots=gen_pf.slots,
+                ad_sets=ad_sets,
+                underperformers=st.session_state.get("underperformers"),
+                strategy_brief=st.session_state.get("strategy_brief"),
+                brand=brand, product=product,
+                total_ads=len(st.session_state.get("df_clean", [])),
+                num_underperformers=len(st.session_state.get("underperformers", [])),
+            )
+            _ex_slug = (_pub_client.name if _pub_client else "export").replace(" ", "_").lower()
+            _ex_date = datetime.now().strftime("%Y%m%d")
+            st.download_button(
+                "Download Excel Report", _ex_xlsx,
+                f"{_ex_slug}_ad_variations_{_ex_date}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True, type="primary",
+            )
+
             dl1, dl2, dl3 = st.columns(3)
             with dl1:
                 st.download_button("Figma JSON", json.dumps(figma_data, indent=2), "figma_ad_variations.json", "application/json", use_container_width=True)
             with dl2:
-                sheet_rows = []
-                for v in figma_data["variations"]:
-                    row = {"id": v["id"], "source_ad": v["source_ad"], "angle": v.get("angle", "")}
-                    for slot in gen_pf.slots:
-                        row[slot.label] = v.get(f"#{slot.key}", "")
-                    sheet_rows.append(row)
-                st.download_button("Sheets CSV", pd.DataFrame(sheet_rows).to_csv(index=False), "ad_variations.csv", "text/csv", use_container_width=True)
-            with dl3:
                 if gen_pid == "meta":
                     bulk = [{"Ad Name": f"V{v['id']}_{v['source_ad'][:30]}", "Primary Text": v.get("#primary_text", ""), "Headline": v.get("#headline", ""), "Description": v.get("#link_description", "")} for v in figma_data["variations"]]
                 elif gen_pid == "google_search":
@@ -1139,6 +1176,8 @@ The plugin duplicates each frame for every variation. Recommended plugins:
                 else:
                     bulk = [{"source_ad": v["source_ad"]} | {slot.label: v.get(f"#{slot.key}", "") for slot in gen_pf.slots} for v in figma_data["variations"]]
                 st.download_button("Bulk Upload CSV", pd.DataFrame(bulk).to_csv(index=False), "bulk_upload.csv", "text/csv", use_container_width=True)
+            with dl3:
+                st.download_button("Raw JSON", json.dumps(ad_sets, indent=2), "ad_variations_raw.json", "application/json", use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════

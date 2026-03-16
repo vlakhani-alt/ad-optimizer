@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [0.7.0] — 2026-03-16
+
+### Added
+- **Polished Excel export** — client-ready `.xlsx` workbook with 3 sheets:
+  - **Summary**: EGC logo, client info, generation stats, strategy highlights (top performer patterns, recommended angles)
+  - **Variations**: all generated ad copy grouped by source ad, with alternating row colors per group, char count columns (red when over limit), rationale in italics
+  - **Underperformers**: flagged ads with scores, reasons, and fatigue signals
+- Dark-themed styling throughout (dark navy backgrounds, accent yellow headers, muted text)
+- Download Excel button is now primary on both Optimize and Publish/Export pages
+- File named `{client}_ad_variations_{date}.xlsx` for easy organization
+
+### Changed
+- Optimize page now shows 3 download options: Excel (primary), CSV, JSON
+- Publish > Export tab now shows Excel Report (primary), plus Figma JSON, Bulk Upload CSV, Raw JSON
+
+---
+
 ## [0.6.0] — 2026-03-15
 
 ### Added
